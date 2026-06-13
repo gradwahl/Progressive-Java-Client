@@ -70,6 +70,7 @@ final class AudioPlayer {
 			sequencer.getTransmitter().setReceiver(midiReceiver);
 			sequencer.setSequence(MidiSystem.getSequence(new File(path)));
 			sequencer.setTempoFactor(1.0F);
+			sequencer.setLoopCount(Sequencer.LOOP_CONTINUOUSLY);
 			midiPaused = false;
 			sequencer.addMetaEventListener(createLoopVolumeListener());
 			sequencer.start();
@@ -79,8 +80,20 @@ final class AudioPlayer {
 		}
 	}
 
+	static synchronized void stopAll() {
+		stopMidi();
+		for (Clip clip : clips) {
+			try { clip.stop(); } catch (Exception ignored) {}
+			try { clip.close(); } catch (Exception ignored) {}
+		}
+		clips.clear();
+	}
+
 	static synchronized void stopMidi() {
 		midiPaused = false;
+		if (midiReceiver != null) {
+			midiReceiver.silenceAllChannels();
+		}
 		if (sequencer != null) {
 			sequencer.stop();
 			sequencer.close();
@@ -95,6 +108,9 @@ final class AudioPlayer {
 
 	static synchronized void pauseMidi() {
 		if (sequencer != null && sequencer.isRunning()) {
+			if (midiReceiver != null) {
+				midiReceiver.silenceAllChannels();
+			}
 			sequencer.stop();
 			midiPaused = true;
 		}
@@ -106,6 +122,9 @@ final class AudioPlayer {
 		}
 		midiPaused = false;
 		sequencer.start();
+		if (midiReceiver != null) {
+			midiReceiver.reapplyVolume();
+		}
 		return true;
 	}
 
@@ -198,6 +217,18 @@ final class AudioPlayer {
 		private void reapplyVolume() {
 			for (int channel = 0; channel < this.channelVolumes.length; channel++) {
 				this.sendChannelVolume(channel, -1L);
+			}
+		}
+
+		// Silence all channels instantly by writing CC 7 = 0 directly to the
+		// underlying receiver, bypassing VolumeReceiver's dB scaling.
+		// Does not change channelVolumes[] or this.volume so reapplyVolume()
+		// correctly restores everything on unmute/resume.
+		private void silenceAllChannels() {
+			for (int ch = 0; ch < 16; ch++) {
+				try {
+					this.receiver.send(new ShortMessage(ShortMessage.CONTROL_CHANGE, ch, 7, 0), -1L);
+				} catch (Exception ignored) {}
 			}
 		}
 

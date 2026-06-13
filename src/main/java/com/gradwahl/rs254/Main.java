@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.zip.CRC32;
 
 public final class Main {
     private Main() {}
@@ -19,6 +20,7 @@ public final class Main {
         relaunchJarWithOneGbHeapIfNeeded(args);
         com.gradwahl.rs254.update.ClientUpdater.ensureUpdaterExtracted();
         ClientDebugger.enable();
+        Runtime.getRuntime().addShutdownHook(new Thread(sign.signlink::stopAudio, "audio-shutdown"));
 
         ClientConfig config = ClientConfig.load();
         applyConfig(config);
@@ -64,6 +66,143 @@ public final class Main {
         System.exit(0);
     }
 
+<<<<<<< Updated upstream
+=======
+    private static final String[] BUNDLED_CACHE_FILES = {
+        "main_file_cache.dat",
+        "main_file_cache.idx0",
+        "main_file_cache.idx1",
+        "main_file_cache.idx2",
+        "main_file_cache.idx3",
+        "main_file_cache.idx4",
+    };
+
+    private static void prepareBundledCache() {
+        File cacheDir = resolveCacheDir();
+        String path = cacheDir.getAbsolutePath();
+        if (System.getProperty("rs254.cache.dir") == null) {
+            System.setProperty("rs254.cache.bootstrapManaged", "true");
+            System.setProperty("rs254.cache.dir", path);
+        }
+        if (System.getProperty("rs254.cacheDir") == null) {
+            System.setProperty("rs254.cacheDir", path);
+        }
+
+        if (hasCompleteCache(cacheDir)) {
+            return;
+        }
+        if (Main.class.getResource("/cache/main_file_cache.dat") == null) {
+            return;
+        }
+        if (!cacheDir.isDirectory() && !cacheDir.mkdirs()) {
+            System.err.println("[Cache] Could not create cache dir: " + cacheDir);
+            return;
+        }
+
+        for (String name : BUNDLED_CACHE_FILES) {
+            try (InputStream in = Main.class.getResourceAsStream("/cache/" + name)) {
+                if (in == null) continue;
+                Files.copy(in, new File(cacheDir, name).toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                System.err.println("[Cache] Failed to extract " + name + ": " + e.getMessage());
+            }
+        }
+        System.out.println("[Cache] Extracted bundled cache to " + cacheDir);
+    }
+
+    private static File resolveCacheDir() {
+        String override = System.getProperty("rs254.cache.dir");
+        if (override != null && !override.isBlank()) {
+            return new File(override);
+        }
+
+        try {
+            File jar = new File(Main.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+            if (jar.isFile()) {
+                File besideJar = new File(jar.getParentFile(), "cache");
+                if (canUseCacheDir(besideJar)) {
+                    return besideJar;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        String home = System.getProperty("user.home");
+        if (home != null && !home.isBlank()) {
+            File userCache = new File(home, ".progressive-java-client" + File.separator + "file_store_32");
+            if (canUseCacheDir(userCache)) {
+                return userCache;
+            }
+        }
+
+        return new File("cache");
+    }
+
+    private static boolean hasCompleteCache(File cacheDir) {
+        if (Boolean.getBoolean("rs254.cache.bootstrapManaged")
+                && Main.class.getResource("/cache/main_file_cache.dat") != null) {
+            return hasMatchingBundledCache(cacheDir);
+        }
+        for (String name : BUNDLED_CACHE_FILES) {
+            File file = new File(cacheDir, name);
+            if (!file.isFile() || file.length() == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasMatchingBundledCache(File cacheDir) {
+        for (String name : BUNDLED_CACHE_FILES) {
+            File file = new File(cacheDir, name);
+            if (!file.isFile() || !resourceMatchesFile("/cache/" + name, file)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean resourceMatchesFile(String resourceName, File file) {
+        try (InputStream resource = Main.class.getResourceAsStream(resourceName);
+             InputStream local = Files.newInputStream(file.toPath())) {
+            if (resource == null || file.length() == 0) {
+                return false;
+            }
+            CRC32 resourceCrc = new CRC32();
+            CRC32 localCrc = new CRC32();
+            byte[] resourceBuffer = new byte[8192];
+            byte[] localBuffer = new byte[8192];
+            int resourceRead;
+            int localRead;
+            do {
+                resourceRead = resource.read(resourceBuffer);
+                localRead = local.read(localBuffer);
+                if (resourceRead != localRead) {
+                    return false;
+                }
+                if (resourceRead > 0) {
+                    resourceCrc.update(resourceBuffer, 0, resourceRead);
+                    localCrc.update(localBuffer, 0, localRead);
+                }
+            } while (resourceRead != -1);
+            return resourceCrc.getValue() == localCrc.getValue();
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static boolean canUseCacheDir(File dir) {
+        try {
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return false;
+            }
+            File test = File.createTempFile(".write_test", ".tmp", dir);
+            return test.delete();
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+>>>>>>> Stashed changes
     private static void applyConfig(ClientConfig config) {
         // Publish loaded values as system properties so downstream code can read them
         System.setProperty("rs254.host", config.host());

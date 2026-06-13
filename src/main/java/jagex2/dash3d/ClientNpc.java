@@ -1,5 +1,6 @@
 package jagex2.dash3d;
 
+import com.gradwahl.rs254.ClientDebugger;
 import deob.ObfuscatedName;
 import jagex2.config.NpcType;
 import jagex2.config.SeqType;
@@ -24,6 +25,9 @@ public class ClientNpc extends ClientEntity {
 			if (super.spotanimId != -1 && super.spotanimFrame != -1) {
 				SpotAnimType var3 = SpotAnimType.list[super.spotanimId];
 				Model var4 = var3.getTempModel();
+				int seqId = var3.anim;
+				int animFrameId = var3.seq != null && super.spotanimFrame >= 0 && super.spotanimFrame < var3.seq.frames.length ? var3.seq.frames[super.spotanimFrame] : -1;
+				ClientDebugger.onSkillcapeRender("npc", super.spotanimId, seqId, super.spotanimFrame, animFrameId, var4 != null);
 				if (var4 != null) {
 					int var5 = var3.seq.frames[super.spotanimFrame];
 					Model var6 = new Model(AnimFrame.shareAlpha(var5), false, true, var4);

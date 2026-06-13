@@ -1,0 +1,274 @@
+{
+  "source": "C:\\Users\\Callum\\Downloads\\Project\\2004scape LostCityRS-Progressive\\Progressive-Java-Client\\osrs\\osrs_cache_b238",
+  "emotes": [
+    {
+      "name": "attack",
+      "animation_id": 4959,
+      "cape_item_ids": [
+        9747
+      ],
+      "gfx_ids": [
+        823
+      ]
+    },
+    {
+      "name": "strength",
+      "animation_id": 4981,
+      "cape_item_ids": [
+        9750
+      ],
+      "gfx_ids": [
+        828
+      ]
+    },
+    {
+      "name": "defence",
+      "animation_id": 4961,
+      "cape_item_ids": [
+        9753
+      ],
+      "gfx_ids": [
+        824
+      ]
+    },
+    {
+      "name": "ranged",
+      "animation_id": 4973,
+      "cape_item_ids": [
+        9756
+      ],
+      "gfx_ids": [
+        832
+      ]
+    },
+    {
+      "name": "prayer",
+      "animation_id": 4979,
+      "cape_item_ids": [
+        9759
+      ],
+      "gfx_ids": [
+        829
+      ]
+    },
+    {
+      "name": "magic",
+      "animation_id": 4939,
+      "cape_item_ids": [
+        9762
+      ],
+      "gfx_ids": [
+        813
+      ]
+    },
+    {
+      "name": "runecraft",
+      "animation_id": 4947,
+      "cape_item_ids": [
+        9765
+      ],
+      "gfx_ids": [
+        817
+      ]
+    },
+    {
+      "name": "hitpoints",
+      "animation_id": 4971,
+      "cape_item_ids": [
+        9768
+      ],
+      "gfx_ids": [
+        833,
+        834
+      ]
+    },
+    {
+      "name": "agility",
+      "animation_id": 4977,
+      "cape_item_ids": [
+        9771
+      ],
+      "gfx_ids": [
+        830
+      ]
+    },
+    {
+      "name": "herblore",
+      "animation_id": 4969,
+      "cape_item_ids": [
+        9774
+      ],
+      "gfx_ids": [
+        835
+      ]
+    },
+    {
+      "name": "thieving",
+      "animation_id": 4965,
+      "cape_item_ids": [
+        9777
+      ],
+      "gfx_ids": [
+        826
+      ]
+    },
+    {
+      "name": "crafting",
+      "animation_id": 4949,
+      "cape_item_ids": [
+        9780
+      ],
+      "gfx_ids": [
+        818
+      ]
+    },
+    {
+      "name": "fletching",
+      "animation_id": 4937,
+      "cape_item_ids": [
+        9783
+      ],
+      "gfx_ids": [
+        812
+      ]
+    },
+    {
+      "name": "slayer",
+      "animation_id": 4967,
+      "cape_item_ids": [
+        9786
+      ],
+      "gfx_ids": [
+        827
+      ]
+    },
+    {
+      "name": "construction",
+      "animation_id": 4953,
+      "cape_item_ids": [
+        9789
+      ],
+      "gfx_ids": [
+        820
+      ]
+    },
+    {
+      "name": "mining",
+      "animation_id": 4941,
+      "cape_item_ids": [
+        9792
+      ],
+      "gfx_ids": [
+        814
+      ]
+    },
+    {
+      "name": "smithing",
+      "animation_id": 4943,
+      "cape_item_ids": [
+        9795
+      ],
+      "gfx_ids": [
+        815
+      ]
+    },
+    {
+      "name": "fishing",
+      "animation_id": 4951,
+      "cape_item_ids": [
+        9798
+      ],
+      "gfx_ids": [
+        819
+      ]
+    },
+    {
+      "name": "cooking",
+      "animation_id": 4955,
+      "cape_item_ids": [
+        9801
+      ],
+      "gfx_ids": [
+        821
+      ]
+    },
+    {
+      "name": "firemaking",
+      "animation_id": 4975,
+      "cape_item_ids": [
+        9804
+      ],
+      "gfx_ids": [
+        831
+      ]
+    },
+    {
+      "name": "woodcutting",
+      "animation_id": 4957,
+      "cape_item_ids": [
+        9807
+      ],
+      "gfx_ids": [
+        822
+      ]
+    },
+    {
+      "name": "farming",
+      "animation_id": 4963,
+      "cape_item_ids": [
+        9810
+      ],
+      "gfx_ids": [
+        825
+      ]
+    },
+    {
+      "name": "quest_point",
+      "animation_id": 4945,
+      "cape_item_ids": [
+        9813
+      ],
+      "gfx_ids": [
+        816
+      ]
+    },
+    {
+      "name": "hunter",
+      "animation_id": 5158,
+      "cape_item_ids": [
+        9948
+      ],
+      "gfx_ids": [
+        907
+      ]
+    },
+    {
+      "name": "achievement_diary",
+      "animation_id": 2709,
+      "cape_item_ids": [
+        19476
+      ],
+      "gfx_ids": [
+        323
+      ]
+    },
+    {
+      "name": "music",
+      "animation_id": 4751,
+      "cape_item_ids": [
+        13221
+      ],
+      "gfx_ids": [
+        1537
+      ]
+    },
+    {
+      "name": "max",
+      "animation_id": 7121,
+      "cape_item_ids": [
+        13280
+      ],
+      "gfx_ids": []
+    }
+  ]
+}

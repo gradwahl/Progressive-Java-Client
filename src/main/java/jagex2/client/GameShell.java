@@ -504,6 +504,20 @@ public class GameShell extends Panel implements Runnable, MouseListener, MouseMo
 	public void keyPressed(KeyEvent arg0) {
 		this.idleCycles = 0;
 		int var2 = arg0.getKeyCode();
+		if (var2 == KeyEvent.VK_V && arg0.isControlDown()) {
+			try {
+				String clip = (String) java.awt.Toolkit.getDefaultToolkit()
+						.getSystemClipboard().getData(java.awt.datatransfer.DataFlavor.stringFlavor);
+				for (char c : clip.toCharArray()) {
+					if (c >= 32 && c <= 126) {
+						this.keyQueue[this.keyQueueWritePos] = c;
+						this.keyQueueWritePos = this.keyQueueWritePos + 1 & 0x7F;
+					}
+				}
+			} catch (Exception ignored) {
+			}
+			return;
+		}
 		int var3 = arg0.getKeyChar();
 		if (var3 < 30) {
 			var3 = 0;

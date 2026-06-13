@@ -1,21 +1,263 @@
 $ErrorActionPreference = "Stop"
 
+<<<<<<< Updated upstream
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
     throw "Java is not installed or is not in PATH. Install JDK 17 or newer, then reopen PowerShell."
+=======
+$jarOutputDir = "Jar Output"
+$classesDir = Join-Path $jarOutputDir "classes"
+$cacheFiles = @(
+    "main_file_cache.dat",
+    "main_file_cache.idx0",
+    "main_file_cache.idx1",
+    "main_file_cache.idx2",
+    "main_file_cache.idx3",
+    "main_file_cache.idx4"
+)
+
+function Test-CachePackDir {
+    param([string]$Path)
+
+    return (Test-Path (Join-Path $Path "main_file_cache.dat")) -and
+        (Test-Path (Join-Path $Path "main_file_cache.idx0"))
+}
+
+function Resolve-ServerCacheDir {
+    if ($env:RS254_SERVER_CACHE_DIR) {
+        $override = [System.IO.Path]::GetFullPath($env:RS254_SERVER_CACHE_DIR)
+        if (Test-CachePackDir $override) {
+            return $override
+        }
+        throw "RS254_SERVER_CACHE_DIR does not point to a valid cache pack: $override"
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $scriptRootFull = [System.IO.Path]::GetFullPath($PSScriptRoot)
+    $projectRoot = Split-Path $scriptRootFull -Parent
+    $searchRoots = @($projectRoot)
+
+    $parent = Split-Path $projectRoot -Parent
+    if ($parent) {
+        $searchRoots += $parent
+    }
+
+    foreach ($root in $searchRoots | Select-Object -Unique) {
+        if (-not (Test-Path $root)) {
+            continue
+        }
+
+        Get-ChildItem -Path $root -Filter main_file_cache.dat -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Directory.Name -eq "pack" -and
+                $_.Directory.Parent -and $_.Directory.Parent.Name -eq "data" -and
+                $_.Directory.Parent.Parent -and $_.Directory.Parent.Parent.Name -eq "engine"
+            } |
+            ForEach-Object {
+                $candidates.Add($_.Directory.FullName)
+            }
+    }
+
+    $best = $candidates |
+        Select-Object -Unique |
+        Where-Object { Test-CachePackDir $_ } |
+        Sort-Object {
+            (Get-Item (Join-Path $_ "main_file_cache.dat")).LastWriteTimeUtc
+        } -Descending |
+        Select-Object -First 1
+
+    return $best
+}
+
+function Sync-CacheFromServerPack {
+    $serverCacheDir = Resolve-ServerCacheDir
+    if (-not $serverCacheDir) {
+        Write-Host "No server cache pack found automatically. Using existing client cache files."
+        return
+    }
+
+    Write-Host "Syncing cache from $serverCacheDir"
+    New-Item -ItemType Directory -Force "cache" | Out-Null
+
+    foreach ($cacheFile in $cacheFiles) {
+        $source = Join-Path $serverCacheDir $cacheFile
+        if (Test-Path $source) {
+            Copy-Item $source (Join-Path "cache" $cacheFile) -Force
+        }
+    }
+}
+
+# Resolve a JDK 17+ — prefer PATH javac if suitable, otherwise scan Program Files.
+function Find-PythonCommand {
+    foreach ($name in @("py", "python")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) {
+            return $cmd.Source
+        }
+    }
+    return $null
+}
+
+function Test-SkillcapeEmotePackDir {
+    param([string]$Path)
+
+    return (Test-Path (Join-Path $Path "data\skillcape_emotes.json")) -and
+           (Test-Path (Join-Path $Path "raw\skeletons"))
+}
+
+function Resolve-SkillcapeEmotePackDir {
+    if ($env:RS254_SKILLCAPE_EMOTE_PACK_DIR) {
+        $override = [System.IO.Path]::GetFullPath($env:RS254_SKILLCAPE_EMOTE_PACK_DIR)
+        if (Test-SkillcapeEmotePackDir $override) {
+            return $override
+        }
+        throw "RS254_SKILLCAPE_EMOTE_PACK_DIR does not point to a valid emote pack: $override"
+    }
+
+    $scriptRootFull = [System.IO.Path]::GetFullPath($PSScriptRoot)
+    $projectRoot = Split-Path $scriptRootFull -Parent
+    $projectParent = Split-Path $projectRoot -Parent
+    $downloadsRoot = if ($projectParent) { Split-Path $projectParent -Parent } else { $null }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($downloadsRoot) {
+        $candidates.Add((Join-Path $downloadsRoot "skillcape_emote_pack_b238"))
+    }
+    $candidates.Add((Join-Path $scriptRootFull "osrs\skillcape_emote_pack_b238"))
+    $candidates.Add((Join-Path $scriptRootFull "cache\skillcape_emote_pack_b238"))
+    $candidates.Add((Join-Path $projectRoot "skillcape_emote_pack_b238"))
+    $candidates.Add((Join-Path $projectRoot "cache\skillcape_emote_pack_b238"))
+    if ($projectParent) {
+        $candidates.Add((Join-Path $projectParent "skillcape_emote_pack_b238"))
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (Test-SkillcapeEmotePackDir $candidate) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    $rebuildScript = Join-Path $PSScriptRoot "tools\rebuild_skillcape_emote_pack.py"
+    $rebuildOutput = Join-Path $PSScriptRoot "osrs\skillcape_emote_pack_b238"
+    $sourceZip = Join-Path (Split-Path $PSScriptRoot -Parent) "osrs_cache_b238_gallery.zip"
+    if ((Test-Path $rebuildScript) -and (Test-Path $sourceZip)) {
+        $python = Find-PythonCommand
+        if ($python) {
+            Write-Host "Rebuilding missing skillcape emote pack from $sourceZip"
+            & $python $rebuildScript | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                throw "Skillcape emote pack rebuild failed with exit code $LASTEXITCODE"
+            }
+            if (Test-SkillcapeEmotePackDir $rebuildOutput) {
+                return [System.IO.Path]::GetFullPath($rebuildOutput)
+            }
+        }
+    }
+
+    return $null
+}
+
+function Invoke-SkillcapeTool {
+    param(
+        [string]$ToolPath,
+        [string]$FailureLabel,
+        [string[]]$Arguments = @()
+    )
+
+    if (-not (Test-Path $ToolPath)) {
+        Write-Host "$FailureLabel not found at $ToolPath; skipping."
+        return
+    }
+
+    $python = Find-PythonCommand
+    if (-not $python) {
+        throw "$FailureLabel requires Python, but neither 'py' nor 'python' was found."
+    }
+
+    $emotePackDir = Resolve-SkillcapeEmotePackDir
+    if (-not $emotePackDir) {
+        throw "Skillcape emote pack not found. Set RS254_SKILLCAPE_EMOTE_PACK_DIR or place skillcape_emote_pack_b238 nearby."
+    }
+
+    $env:RS254_SKILLCAPE_EMOTE_PACK_DIR = $emotePackDir
+    & $python $ToolPath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureLabel failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Apply-SkillcapeModelPatch {
+    $patcher = Join-Path $PSScriptRoot "tools\patch_skillcape_models.py"
+    Write-Host "Applying skillcape model cache patch..."
+    Invoke-SkillcapeTool -ToolPath $patcher -FailureLabel "Skillcape model cache patcher"
+}
+
+function Apply-SkillcapeCachePatch {
+    $patcher = Join-Path $PSScriptRoot "tools\patch_skillcape_emotes.py"
+    Write-Host "Applying skillcape emote cache patch..."
+    Invoke-SkillcapeTool -ToolPath $patcher -FailureLabel "Skillcape emote cache patcher" -Arguments @("--no-backup")
+}
+
+function Find-JavaHome {
+    $javacCmd = Get-Command javac -ErrorAction SilentlyContinue
+    if ($javacCmd) {
+        $ver = (& $javacCmd.Source -version 2>&1) -replace 'javac ', ''
+        $major = [int]($ver -split '[\._]')[0]
+        if ($major -ge 17) { return (Split-Path (Split-Path $javacCmd.Source)) }
+    }
+    $searchRoots = @("$env:ProgramFiles\Java", "$env:ProgramFiles\Eclipse Adoptium",
+                     "$env:ProgramFiles\Microsoft", "$env:ProgramFiles\Amazon Corretto",
+                     "${env:ProgramFiles(x86)}\Java")
+    foreach ($root in $searchRoots) {
+        if (-not (Test-Path $root)) { continue }
+        Get-ChildItem $root -Directory | Sort-Object Name -Descending | ForEach-Object {
+            $javacBin = Join-Path $_.FullName "bin\javac.exe"
+            if (Test-Path $javacBin) {
+                $ver = (& $javacBin -version 2>&1) -replace 'javac ', ''
+                $major = [int]($ver -split '[\._]')[0]
+                if ($major -ge 17) { return $_.FullName }
+            }
+        }
+    }
+    return $null
+>>>>>>> Stashed changes
 }
 
 if (-not (Get-Command javac -ErrorAction SilentlyContinue)) {
     throw "javac was not found. You have Java Runtime, but not the JDK. Install JDK 17 or newer."
 }
 
+<<<<<<< Updated upstream
 Remove-Item -Recurse -Force target -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force target/classes | Out-Null
 
 if (Test-Path src/main/resources) {
     Copy-Item -Recurse src/main/resources/* target/classes/ -Force
+=======
+Sync-CacheFromServerPack
+Apply-SkillcapeModelPatch
+Apply-SkillcapeCachePatch
+
+Remove-Item -Recurse -Force $jarOutputDir -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $classesDir | Out-Null
+
+if (Test-Path src/main/resources) {
+    Copy-Item -Recurse src/main/resources/* "$classesDir/" -Force
 }
 
-Get-ChildItem -Recurse src/main/java -Filter *.java | ForEach-Object FullName | Set-Content sources.txt
+$cacheOutputDir = Join-Path $classesDir "cache"
+New-Item -ItemType Directory -Force $cacheOutputDir | Out-Null
+foreach ($cacheFile in $cacheFiles) {
+    $source = Join-Path "cache" $cacheFile
+    if (Test-Path $source) {
+        Copy-Item $source "$cacheOutputDir/" -Force
+    }
+>>>>>>> Stashed changes
+}
+
+# Quote each path so javac's @argfile doesn't split on whitespace (the project may
+# live under a directory containing spaces, e.g. "117hd port"). Use forward slashes:
+# inside an argfile, backslash is an escape character, so a quoted Windows path would
+# otherwise lose its separators. javac accepts forward slashes on Windows.
+Get-ChildItem -Recurse src/main/java -Filter *.java | ForEach-Object { '"' + ($_.FullName -replace '\\', '/') + '"' } | Set-Content sources.txt
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 javac -J-Xmx1g --release 17 -encoding UTF-8 -cp "lib/*" -d target/classes '@sources.txt'

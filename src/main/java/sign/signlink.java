@@ -46,8 +46,6 @@ public class signlink implements Runnable {
 
 	public static final int clientversion = 254;
 
-	public static int midifade;
-
 	public static int midipos;
 
 	public static int midivol;
@@ -335,6 +333,10 @@ public class signlink implements Runnable {
 		savebuf = arg0;
 		midiplay = true;
 		savereq = "jingle" + midipos + ".mid";
+	}
+
+	public static synchronized void stopAudio() {
+		AudioPlayer.stopAll();
 	}
 
 	public static synchronized void midistop() {

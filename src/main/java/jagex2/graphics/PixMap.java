@@ -53,8 +53,10 @@ public class PixMap implements ImageProducer, ImageObserver {
 
 	@ObfuscatedName("rb.a(IILjava/awt/Graphics;Z)V")
 	public void draw(int arg0, int arg1, Graphics arg2) {
-		this.setPixels();
-		arg2.drawImage(this.img, arg1, arg0, this);
+		if (arg2 != null) {
+			this.setPixels();
+			arg2.drawImage(this.img, arg1, arg0, this);
+		}
 		// Mirror pixels into uiBuffer so GLRenderer can draw them as a 2D overlay.
 		// Viewport PixMap uses an out-of-range sentinel so we can distinguish
 		// "never drawn" (transparent) from valid RGB pixels such as black and item outlines.
@@ -85,6 +87,106 @@ public class PixMap implements ImageProducer, ImageObserver {
 					for (int c = 0; c < cols; c++) {
 						uiBuffer[dstOff + c] = this.data[srcOff + c] | 0xFF000000;
 					}
+				}
+			}
+		}
+	}
+
+
+	/**
+	 * Like draw(), but pixels equal to UI_TRANSPARENT_SENTINEL are skipped when
+	 * writing to uiBuffer so the content already drawn there (e.g. inventory)
+	 * shows through. Used for the stone tab rows which have transparent gaps.
+	 */
+	public void drawTransparent(int arg0, int arg1, Graphics arg2) {
+		if (arg2 != null) {
+			this.setPixels();
+			arg2.drawImage(this.img, arg1, arg0, this);
+		}
+		if (uiBuffer == null) {
+			return;
+		}
+		final int SENTINEL = com.gradwahl.rs254.gl.GLRenderer.UI_TRANSPARENT_SENTINEL;
+		int dstX = arg1, dstY = arg0;
+		int srcSkip = 0;
+		if (dstX < 0) { srcSkip = -dstX; dstX = 0; }
+		for (int row = 0; row < this.height; row++) {
+			int dy = dstY + row;
+			if (dy < 0 || dy >= uiHeight) continue;
+			int srcOff = row * this.width + srcSkip;
+			int dstOff = dy * uiWidth + dstX;
+			int cols   = Math.min(this.width - srcSkip, uiWidth - dstX);
+			if (cols <= 0) continue;
+			for (int c = 0; c < cols; c++) {
+				int px = this.data[srcOff + c];
+				if (px == SENTINEL) continue;
+				uiBuffer[dstOff + c] = px | 0xFF000000;
+			}
+		}
+	}
+
+	/**
+	 * Draws only a rectangular portion of this pixmap to the screen/UI overlay.
+	 * Used by the fixed OSRS chatbox so its lower edge can sit above the
+	 * bottom button strip without re-covering the whole Public/Private bar.
+	 */
+	public void drawPartial(int dstY, int dstX, Graphics graphics, int srcY, int srcX, int w, int h) {
+		if (w <= 0 || h <= 0) {
+			return;
+		}
+		if (srcX < 0) { dstX -= srcX; w += srcX; srcX = 0; }
+		if (srcY < 0) { dstY -= srcY; h += srcY; srcY = 0; }
+		if (srcX + w > this.width) {
+			w = this.width - srcX;
+		}
+		if (srcY + h > this.height) {
+			h = this.height - srcY;
+		}
+		if (w <= 0 || h <= 0) {
+			return;
+		}
+		if (graphics != null) {
+			this.setPixels();
+			graphics.drawImage(this.img,
+					dstX, dstY, dstX + w, dstY + h,
+					srcX, srcY, srcX + w, srcY + h,
+					this);
+		}
+		if (uiBuffer == null) {
+			return;
+		}
+		boolean isViewport = (this.data == com.gradwahl.rs254.gl.GLRenderer.viewportPixels);
+		int copySrcX = srcX;
+		int copySrcY = srcY;
+		int copyDstX = dstX;
+		int copyDstY = dstY;
+		int copyW = w;
+		int copyH = h;
+		if (copyDstX < 0) { copySrcX -= copyDstX; copyW += copyDstX; copyDstX = 0; }
+		if (copyDstY < 0) { copySrcY -= copyDstY; copyH += copyDstY; copyDstY = 0; }
+		if (copyDstX + copyW > uiWidth) {
+			copyW = uiWidth - copyDstX;
+		}
+		if (copyDstY + copyH > uiHeight) {
+			copyH = uiHeight - copyDstY;
+		}
+		if (copyW <= 0 || copyH <= 0) {
+			return;
+		}
+		for (int row = 0; row < copyH; row++) {
+			int srcOff = (copySrcY + row) * this.width + copySrcX;
+			int dstOff = (copyDstY + row) * uiWidth + copyDstX;
+			if (isViewport) {
+				for (int col = 0; col < copyW; col++) {
+					int px = this.data[srcOff + col];
+					uiBuffer[dstOff + col] =
+							(px == com.gradwahl.rs254.gl.GLRenderer.UI_TRANSPARENT_SENTINEL)
+									? 0
+									: (px | 0xFF000000);
+				}
+			} else {
+				for (int col = 0; col < copyW; col++) {
+					uiBuffer[dstOff + col] = this.data[srcOff + col] | 0xFF000000;
 				}
 			}
 		}

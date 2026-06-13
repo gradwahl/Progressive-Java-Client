@@ -1,12 +1,18 @@
 package com.gradwahl.rs254;
 
+import jagex2.dash3d.AnimBase;
+import jagex2.dash3d.AnimFrame;
+import jagex2.dash3d.Model;
+
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -21,6 +27,10 @@ import java.util.concurrent.atomic.AtomicLong;
  *   - render frame spikes (>50ms gap → flash risk)
  */
 public final class ClientDebugger {
+
+    private static final int STRENGTH_SPOTANIM_ID = 828;
+    private static final int STRENGTH_SPOTANIM_SEQ_ID = 4982;
+    private static final int STRENGTH_BODY_SEQ_ID = 4981;
 
     public enum LogoutReason {
         SERVER_OPCODE,
@@ -48,6 +58,16 @@ public final class ClientDebugger {
     private static volatile int lastLoopCycle;
     private static volatile int lastDrawCycle;
     private static volatile long lastThreadDumpAtMs;
+    private static volatile int lastSkillcapeAdvanceFrame = Integer.MIN_VALUE;
+    private static volatile int lastSkillcapeRenderFrame = Integer.MIN_VALUE;
+    private static volatile Boolean lastSkillcapeModelReady;
+    private static volatile boolean dumpedLocalPlayerRig;
+    private static volatile boolean dumpedStrengthBodyFrame;
+    private static volatile boolean dumpedStrengthSpotanimRig;
+    private static volatile int lastSkillcapeBodyFrame = Integer.MIN_VALUE;
+    private static volatile int lastSkillcapeBodySeq = Integer.MIN_VALUE;
+    private static volatile int lastSkillcapeBodyDeltaFrame = Integer.MIN_VALUE;
+    private static volatile int lastSkillcapeSpotanimDeltaFrame = Integer.MIN_VALUE;
 
     // state snapshot at logout time
     public static volatile int lastIdleCycles   = 0;
@@ -127,6 +147,242 @@ public final class ClientDebugger {
     public static void onServerLogoutPacket() {
         if (!enabled) return;
         log("[PACKET] server sent LOGOUT opcode (21)");
+    }
+
+    public static void onProtocolError(String tag, int ptype, int psize, int ptype1, int ptype2, String detail) {
+        if (!enabled) return;
+        log("[PROTOCOL] tag=" + tag
+                + " ptype=" + ptype
+                + " psize=" + psize
+                + " ptype1=" + ptype1
+                + " ptype2=" + ptype2
+                + (detail == null || detail.isBlank() ? "" : " " + detail));
+    }
+
+    public static void onSkillcapeSpotanimReceived(String source, int spotanimId, int seqId, int frame, int lastCycle, int height) {
+        if (!enabled || !isStrengthSkillcapeSpotanim(spotanimId, seqId)) return;
+        lastSkillcapeAdvanceFrame = Integer.MIN_VALUE;
+        lastSkillcapeRenderFrame = Integer.MIN_VALUE;
+        lastSkillcapeModelReady = null;
+        lastSkillcapeBodyFrame = Integer.MIN_VALUE;
+        lastSkillcapeBodySeq = Integer.MIN_VALUE;
+        lastSkillcapeBodyDeltaFrame = Integer.MIN_VALUE;
+        lastSkillcapeSpotanimDeltaFrame = Integer.MIN_VALUE;
+        log("[SKILLCAPE] received source=" + source
+                + " spotanimId=" + spotanimId
+                + " seqId=" + seqId
+                + " frame=" + frame
+                + " lastCycle=" + lastCycle
+                + " height=" + height
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void onSkillcapeSpotanimAdvance(int spotanimId, int seqId, int frame, int numFrames, int cycle) {
+        if (!enabled || !isStrengthSkillcapeSpotanim(spotanimId, seqId)) return;
+        if (frame == lastSkillcapeAdvanceFrame) return;
+        lastSkillcapeAdvanceFrame = frame;
+        log("[SKILLCAPE] advance"
+                + " spotanimId=" + spotanimId
+                + " seqId=" + seqId
+                + " frame=" + frame + "/" + numFrames
+                + " cycle=" + cycle
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void onSkillcapeSpotanimEnd(int spotanimId, int seqId) {
+        if (!enabled || !isStrengthSkillcapeSpotanim(spotanimId, seqId)) return;
+        log("[SKILLCAPE] finished spotanimId=" + spotanimId
+                + " seqId=" + seqId
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void onSkillcapeRender(String source, int spotanimId, int seqId, int frame, int animFrameId, boolean modelReady) {
+        if (!enabled || !isStrengthSkillcapeSpotanim(spotanimId, seqId)) return;
+        if (lastSkillcapeModelReady == null || lastSkillcapeModelReady != modelReady) {
+            lastSkillcapeModelReady = modelReady;
+            log("[SKILLCAPE] model source=" + source
+                    + " spotanimId=" + spotanimId
+                    + " seqId=" + seqId
+                    + " ready=" + modelReady
+                    + " loopCycle=" + lastLoopCycle);
+        }
+        if (!modelReady || frame == lastSkillcapeRenderFrame) return;
+        lastSkillcapeRenderFrame = frame;
+        log("[SKILLCAPE] render source=" + source
+                + " spotanimId=" + spotanimId
+                + " seqId=" + seqId
+                + " frame=" + frame
+                + " animFrameId=" + animFrameId
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void onSkillcapeBodySeqSet(String source, int seqId, int delay) {
+        if (!enabled || seqId != STRENGTH_BODY_SEQ_ID) {
+            return;
+        }
+        log("[SKILLCAPE] body-set source=" + source
+                + " seqId=" + seqId
+                + " delay=" + delay
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void onSkillcapeBodyRender(String source, int seqId, int frameIndex, int animFrameId, int delay) {
+        if (!enabled || seqId != STRENGTH_BODY_SEQ_ID) {
+            return;
+        }
+        if (lastSkillcapeBodySeq != seqId || lastSkillcapeBodyFrame != frameIndex) {
+            lastSkillcapeBodySeq = seqId;
+            lastSkillcapeBodyFrame = frameIndex;
+            log("[SKILLCAPE] body-render source=" + source
+                    + " seqId=" + seqId
+                    + " frameIndex=" + frameIndex
+                    + " animFrameId=" + animFrameId
+                    + " delay=" + delay
+                    + " loopCycle=" + lastLoopCycle);
+        }
+    }
+
+    public static void onSkillcapeBodyDelta(String source, int seqId, int frameIndex, int movedVertices, int maxDelta) {
+        if (!enabled || seqId != STRENGTH_BODY_SEQ_ID) {
+            return;
+        }
+        if (lastSkillcapeBodyDeltaFrame == frameIndex) {
+            return;
+        }
+        lastSkillcapeBodyDeltaFrame = frameIndex;
+        log("[SKILLCAPE] body-delta source=" + source
+                + " seqId=" + seqId
+                + " frameIndex=" + frameIndex
+                + " movedVertices=" + movedVertices
+                + " maxDelta=" + maxDelta
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void dumpLocalPlayerRig(String source, Model model) {
+        if (!enabled || dumpedLocalPlayerRig || model == null || model.labelVertices == null) {
+            return;
+        }
+        dumpedLocalPlayerRig = true;
+        dumpModelRigInternal(source, model);
+    }
+
+    public static void dumpStrengthSpotanimRig(String source, Model model) {
+        if (!enabled || dumpedStrengthSpotanimRig || model == null || model.labelVertices == null) {
+            return;
+        }
+        dumpedStrengthSpotanimRig = true;
+        dumpModelRigInternal(source, model);
+    }
+
+    public static void onSkillcapeSpotanimDelta(String source, int frameIndex, int movedVertices, int maxDelta) {
+        if (!enabled) {
+            return;
+        }
+        if (lastSkillcapeSpotanimDeltaFrame == frameIndex) {
+            return;
+        }
+        lastSkillcapeSpotanimDeltaFrame = frameIndex;
+        log("[SKILLCAPE] spotanim-delta source=" + source
+                + " frameIndex=" + frameIndex
+                + " movedVertices=" + movedVertices
+                + " maxDelta=" + maxDelta
+                + " loopCycle=" + lastLoopCycle);
+    }
+
+    public static void dumpStrengthSpotanimFrame(String source, int seqId, int frameId) {
+        if (!enabled || seqId != STRENGTH_SPOTANIM_SEQ_ID || frameId < 0) {
+            return;
+        }
+        AnimFrame frame = AnimFrame.get(frameId);
+        if (frame == null || frame.base == null) {
+            log("[SKILLCAPE] spotanim-frame source=" + source
+                    + " seqId=" + seqId
+                    + " frameId=" + frameId
+                    + " loaded=false");
+            return;
+        }
+        AnimBase base = frame.base;
+        int maxLabel = -1;
+        Set<Integer> distinct = new HashSet<>();
+        for (int[] labels : base.labels) {
+            if (labels == null) {
+                continue;
+            }
+            for (int label : labels) {
+                if (label > maxLabel) {
+                    maxLabel = label;
+                }
+                distinct.add(label);
+            }
+        }
+        log("[SKILLCAPE] spotanim-frame source=" + source
+                + " seqId=" + seqId
+                + " frameId=" + frameId
+                + " transforms=" + frame.size
+                + " baseSize=" + base.size
+                + " distinctLabels=" + distinct.size()
+                + " maxLabel=" + maxLabel);
+    }
+
+    private static void dumpModelRigInternal(String source, Model model) {
+        StringBuilder groups = new StringBuilder();
+        int nonEmpty = 0;
+        int maxGroup = -1;
+        for (int i = 0; i < model.labelVertices.length; i++) {
+            int[] vertices = model.labelVertices[i];
+            if (vertices == null || vertices.length == 0) {
+                continue;
+            }
+            if (groups.length() > 0) {
+                groups.append(',');
+            }
+            groups.append(i).append(':').append(vertices.length);
+            nonEmpty++;
+            maxGroup = i;
+        }
+        log("[SKILLCAPE] local-rig source=" + source
+                + " vertexCount=" + model.vertexCount
+                + " faceCount=" + model.faceCount
+                + " labelGroups=" + model.labelVertices.length
+                + " nonEmptyGroups=" + nonEmpty
+                + " maxGroup=" + maxGroup
+                + " groups=" + groups);
+    }
+
+    public static void dumpStrengthBodyFrame(String source, int seqId, int frameId) {
+        if (!enabled || dumpedStrengthBodyFrame || frameId < 0) {
+            return;
+        }
+        dumpedStrengthBodyFrame = true;
+        AnimFrame frame = AnimFrame.get(frameId);
+        if (frame == null || frame.base == null) {
+            log("[SKILLCAPE] body-frame source=" + source
+                    + " seqId=" + seqId
+                    + " frameId=" + frameId
+                    + " loaded=false");
+            return;
+        }
+        AnimBase base = frame.base;
+        int maxLabel = -1;
+        Set<Integer> distinct = new HashSet<>();
+        for (int[] labels : base.labels) {
+            if (labels == null) {
+                continue;
+            }
+            for (int label : labels) {
+                if (label > maxLabel) {
+                    maxLabel = label;
+                }
+                distinct.add(label);
+            }
+        }
+        log("[SKILLCAPE] body-frame source=" + source
+                + " seqId=" + seqId
+                + " frameId=" + frameId
+                + " transforms=" + frame.size
+                + " baseSize=" + base.size
+                + " distinctLabels=" + distinct.size()
+                + " maxLabel=" + maxLabel);
     }
 
     // -------------------------------------------------------------------------
@@ -256,5 +512,9 @@ public final class ClientDebugger {
     public static void log(String msg) {
         if (out == null) return;
         out.println(LocalDateTime.now().format(FMT) + " " + msg);
+    }
+
+    private static boolean isStrengthSkillcapeSpotanim(int spotanimId, int seqId) {
+        return spotanimId == STRENGTH_SPOTANIM_ID || seqId == STRENGTH_SPOTANIM_SEQ_ID;
     }
 }

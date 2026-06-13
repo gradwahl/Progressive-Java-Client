@@ -199,8 +199,11 @@ public class BZip2 {
 		int[] gBase = null;
 		int[] gPerm = null;
 
-		s.blockSize100k = 1;
-		if (BZip2State.tt == null) {
+		// Patched cache archives can legitimately exceed the old 100k scratch size.
+		// Standard bzip2 supports up to 9 * 100k blocks, so keep a buffer large enough
+		// for the maximum block size instead of assuming legacy tiny archives.
+		s.blockSize100k = 9;
+		if (BZip2State.tt == null || BZip2State.tt.length < s.blockSize100k * 100000) {
 			BZip2State.tt = new int[s.blockSize100k * 100000];
 		}
 

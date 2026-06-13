@@ -247,6 +247,72 @@ public class Pix32 extends Pix2D {
 		}
 	}
 
+	/**
+	 * Alpha-blended blit of this (ARGB, alpha in bits 24-31) onto Pix2D.pixels (RGB).
+	 * Used for the modern OSRS UI sprites (orbs, round minimap frame) which need
+	 * partial transparency the legacy 1-bit plotSprite cannot represent.
+	 */
+	public void plotAlpha(int arg1, int arg2) {
+		int x = arg1 + this.xof;
+		int y = arg2 + this.yof;
+		int dst = x + y * Pix2D.width;
+		int src = 0;
+		int rows = this.hi;
+		int cols = this.wi;
+		int dstStep = Pix2D.width - cols;
+		int srcStep = 0;
+		if (y < Pix2D.boundTop) {
+			int d = Pix2D.boundTop - y;
+			rows -= d;
+			y = Pix2D.boundTop;
+			src += d * cols;
+			dst += d * Pix2D.width;
+		}
+		if (y + rows > Pix2D.boundBottom) {
+			rows -= y + rows - Pix2D.boundBottom;
+		}
+		if (x < Pix2D.boundLeft) {
+			int d = Pix2D.boundLeft - x;
+			cols -= d;
+			x = Pix2D.boundLeft;
+			src += d;
+			dst += d;
+			srcStep += d;
+			dstStep += d;
+		}
+		if (x + cols > Pix2D.boundRight) {
+			int d = x + cols - Pix2D.boundRight;
+			cols -= d;
+			srcStep += d;
+			dstStep += d;
+		}
+		if (cols <= 0 || rows <= 0) {
+			return;
+		}
+		int[] s = this.data;
+		int[] p = Pix2D.pixels;
+		for (int row = 0; row < rows; row++) {
+			for (int col = 0; col < cols; col++) {
+				int rgba = s[src++];
+				int a = rgba >>> 24;
+				if (a == 0) {
+					dst++;
+				} else if (a == 255) {
+					p[dst++] = rgba & 0xFFFFFF;
+				} else {
+					int ia = 256 - a;
+					int d2 = p[dst];
+					int r = (((rgba >> 16 & 0xFF) * a) + ((d2 >> 16 & 0xFF) * ia)) >> 8;
+					int g = (((rgba >> 8 & 0xFF) * a) + ((d2 >> 8 & 0xFF) * ia)) >> 8;
+					int b = (((rgba & 0xFF) * a) + ((d2 & 0xFF) * ia)) >> 8;
+					p[dst++] = (r << 16) + (g << 8) + b;
+				}
+			}
+			dst += dstStep;
+			src += srcStep;
+		}
+	}
+
 	@ObfuscatedName("jb.a([I[IIIIIIII)V")
 	public void plot(int[] arg0, int[] arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8) {
 		int var10 = -(arg5 >> 2);
@@ -361,7 +427,18 @@ public class Pix32 extends Pix2D {
 			int var18 = (arg6 << 16) + var13 * var16 + var12 * var17;
 			int var19 = (arg9 << 16) + (var13 * var17 - var12 * var16);
 			int var20 = arg5 + arg8 * Pix2D.width;
-			for (int var21 = 0; var21 < arg7; var21++) {
+			// Skip rows that would land above the top of the pixel buffer (negative y).
+			// Without this, the first out-of-bounds write throws and the catch block
+			// exits the whole function, rendering nothing at all.
+			int firstRow = 0;
+			if (arg8 < 0) {
+				firstRow = -arg8;
+				var18 += firstRow * var16;
+				var19 += firstRow * var17;
+				var20 += firstRow * Pix2D.width;
+			}
+			for (int var21 = firstRow; var21 < arg7; var21++) {
+				if (arg8 + var21 >= Pix2D.height) break;
 				int var22 = arg1[var21];
 				int var23 = var20 + var22;
 				int var24 = var18 + var17 * var22;

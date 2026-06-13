@@ -1,6 +1,7 @@
 package jagex2.config;
 
 import deob.ObfuscatedName;
+import com.gradwahl.rs254.overlay.SkillcapeOverlay;
 import jagex2.dash3d.Model;
 import jagex2.datastruct.LruCache;
 import jagex2.io.JagFile;
@@ -108,6 +109,9 @@ public class SpotAnimType {
 			return var1;
 		}
 		Model var2 = Model.load(this.model);
+		if (var2 == null) {
+			var2 = SkillcapeOverlay.getOverlayModel(this.model);
+		}
 		if (var2 == null) {
 			return null;
 		}

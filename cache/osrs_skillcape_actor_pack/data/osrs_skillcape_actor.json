@@ -1,0 +1,1223 @@
+{
+  "source": "C:\\Users\\Callum\\Downloads\\Project\\117hd port\\osrs_cache_b238_gallery.zip",
+  "maleDefaultParts": [
+    {
+      "kitId": 0,
+      "bodyPartId": 0,
+      "models": [
+        230
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 10,
+      "bodyPartId": 1,
+      "models": [
+        249
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 18,
+      "bodyPartId": 2,
+      "models": [
+        28515
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 26,
+      "bodyPartId": 3,
+      "models": [
+        26632
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 33,
+      "bodyPartId": 4,
+      "models": [
+        176
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 36,
+      "bodyPartId": 5,
+      "models": [
+        28285
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 42,
+      "bodyPartId": 6,
+      "models": [
+        181
+      ],
+      "recolors": []
+    }
+  ],
+  "femaleDefaultParts": [
+    {
+      "kitId": 45,
+      "bodyPartId": 7,
+      "models": [
+        403
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 292,
+      "bodyPartId": 8,
+      "models": [
+        456
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 56,
+      "bodyPartId": 9,
+      "models": [
+        18554
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 61,
+      "bodyPartId": 10,
+      "models": [
+        3476
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 67,
+      "bodyPartId": 11,
+      "models": [
+        353
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 70,
+      "bodyPartId": 12,
+      "models": [
+        14423
+      ],
+      "recolors": []
+    },
+    {
+      "kitId": 79,
+      "bodyPartId": 13,
+      "models": [
+        358
+      ],
+      "recolors": []
+    }
+  ],
+  "capesBySeq": {
+    "4959": {
+      "itemId": 9747,
+      "name": "Attack cape",
+      "maleModels": [
+        18920,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18969,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          796
+        ],
+        [
+          54183,
+          920
+        ],
+        [
+          54503,
+          912
+        ],
+        [
+          960,
+          796
+        ],
+        [
+          22464,
+          920
+        ],
+        [
+          43968,
+          908
+        ]
+      ]
+    },
+    "4981": {
+      "itemId": 9750,
+      "name": "Strength cape",
+      "maleModels": [
+        18954,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18989,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          27544
+        ],
+        [
+          54183,
+          26516
+        ],
+        [
+          54503,
+          26516
+        ],
+        [
+          960,
+          27544
+        ],
+        [
+          22464,
+          27544
+        ],
+        [
+          43968,
+          26516
+        ]
+      ]
+    },
+    "4961": {
+      "itemId": 9753,
+      "name": "Defence cape",
+      "maleModels": [
+        18928,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18973,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          41426
+        ],
+        [
+          54183,
+          41408
+        ],
+        [
+          54503,
+          41527
+        ],
+        [
+          960,
+          41426
+        ],
+        [
+          22464,
+          41416
+        ],
+        [
+          43968,
+          41408
+        ]
+      ]
+    },
+    "4973": {
+      "itemId": 9756,
+      "name": "Ranging cape",
+      "maleModels": [
+        18948,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18985,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          15004
+        ],
+        [
+          54183,
+          15128
+        ],
+        [
+          54503,
+          15252
+        ],
+        [
+          960,
+          15004
+        ],
+        [
+          22464,
+          15128
+        ],
+        [
+          43968,
+          15252
+        ]
+      ]
+    },
+    "4979": {
+      "itemId": 9759,
+      "name": "Prayer cape",
+      "maleModels": [
+        18945,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18983,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          127
+        ],
+        [
+          54183,
+          123
+        ],
+        [
+          54503,
+          111
+        ],
+        [
+          960,
+          127
+        ],
+        [
+          22464,
+          123
+        ],
+        [
+          43968,
+          119
+        ]
+      ]
+    },
+    "4939": {
+      "itemId": 9762,
+      "name": "Magic cape",
+      "maleModels": [
+        18915,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18981,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          6348
+        ],
+        [
+          54183,
+          6340
+        ],
+        [
+          54503,
+          6331
+        ],
+        [
+          960,
+          6348
+        ],
+        [
+          22464,
+          6340
+        ],
+        [
+          43968,
+          6331
+        ]
+      ]
+    },
+    "4947": {
+      "itemId": 9765,
+      "name": "Runecraft cape",
+      "maleModels": [
+        18950,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18986,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          10332
+        ],
+        [
+          54183,
+          10316
+        ],
+        [
+          54503,
+          10308
+        ],
+        [
+          960,
+          10332
+        ],
+        [
+          22464,
+          10324
+        ],
+        [
+          43968,
+          10316
+        ]
+      ]
+    },
+    "4971": {
+      "itemId": 9768,
+      "name": "Hitpoints cape",
+      "maleModels": [
+        18939,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18980,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          43076
+        ],
+        [
+          54183,
+          43092
+        ],
+        [
+          54503,
+          43092
+        ],
+        [
+          960,
+          8305
+        ],
+        [
+          22464,
+          8297
+        ],
+        [
+          43968,
+          8289
+        ]
+      ]
+    },
+    "4977": {
+      "itemId": 9771,
+      "name": "Agility cape",
+      "maleModels": [
+        18918,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18968,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          43431
+        ],
+        [
+          54183,
+          43550
+        ],
+        [
+          54503,
+          43674
+        ],
+        [
+          960,
+          43431
+        ],
+        [
+          22464,
+          43550
+        ],
+        [
+          43968,
+          43674
+        ]
+      ]
+    },
+    "4969": {
+      "itemId": 9774,
+      "name": "Herblore cape",
+      "maleModels": [
+        18938,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18978,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          22422
+        ],
+        [
+          54183,
+          22416
+        ],
+        [
+          54503,
+          22412
+        ],
+        [
+          960,
+          22422
+        ],
+        [
+          22464,
+          22420
+        ],
+        [
+          43968,
+          22416
+        ]
+      ]
+    },
+    "4965": {
+      "itemId": 9777,
+      "name": "Thieving cape",
+      "maleModels": [
+        18956,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18990,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          58661
+        ],
+        [
+          54183,
+          58661
+        ],
+        [
+          54503,
+          59152
+        ],
+        [
+          960,
+          58661
+        ],
+        [
+          22464,
+          58785
+        ],
+        [
+          43968,
+          58904
+        ]
+      ]
+    },
+    "4949": {
+      "itemId": 9780,
+      "name": "Crafting cape",
+      "maleModels": [
+        18925,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18972,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          4397
+        ],
+        [
+          54183,
+          4636
+        ],
+        [
+          54503,
+          4884
+        ],
+        [
+          960,
+          4397
+        ],
+        [
+          22464,
+          4517
+        ],
+        [
+          43968,
+          4636
+        ]
+      ]
+    },
+    "4937": {
+      "itemId": 9783,
+      "name": "Fletching cape",
+      "maleModels": [
+        18935,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18977,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          33304
+        ],
+        [
+          54183,
+          33672
+        ],
+        [
+          54503,
+          33668
+        ],
+        [
+          960,
+          33304
+        ],
+        [
+          22464,
+          33676
+        ],
+        [
+          43968,
+          33672
+        ]
+      ]
+    },
+    "4967": {
+      "itemId": 9786,
+      "name": "Slayer cape",
+      "maleModels": [
+        18951,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18987,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          12
+        ],
+        [
+          54183,
+          0
+        ],
+        [
+          54503,
+          0
+        ],
+        [
+          960,
+          12
+        ],
+        [
+          22464,
+          8
+        ],
+        [
+          43968,
+          8
+        ]
+      ]
+    },
+    "4953": {
+      "itemId": 9789,
+      "name": "Construct. cape",
+      "maleModels": [
+        18916,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18970,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          6344
+        ],
+        [
+          54183,
+          6327
+        ],
+        [
+          54503,
+          6323
+        ],
+        [
+          960,
+          6344
+        ],
+        [
+          22464,
+          6336
+        ],
+        [
+          43968,
+          6327
+        ]
+      ]
+    },
+    "4941": {
+      "itemId": 9792,
+      "name": "Mining cape",
+      "maleModels": [
+        18942,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18982,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          10401
+        ],
+        [
+          54183,
+          10512
+        ],
+        [
+          54503,
+          10508
+        ],
+        [
+          960,
+          10401
+        ],
+        [
+          22464,
+          10392
+        ],
+        [
+          43968,
+          10512
+        ]
+      ]
+    },
+    "4943": {
+      "itemId": 9795,
+      "name": "Smithing cape",
+      "maleModels": [
+        18953,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18988,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          10392
+        ],
+        [
+          54183,
+          10512
+        ],
+        [
+          54503,
+          10512
+        ],
+        [
+          960,
+          10392
+        ],
+        [
+          22464,
+          10512
+        ],
+        [
+          43968,
+          10512
+        ]
+      ]
+    },
+    "4951": {
+      "itemId": 9798,
+      "name": "Fishing cape",
+      "maleModels": [
+        18934,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18976,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          38119
+        ],
+        [
+          54183,
+          38486
+        ],
+        [
+          54503,
+          38325
+        ],
+        [
+          960,
+          38222
+        ],
+        [
+          22464,
+          38214
+        ],
+        [
+          43968,
+          38205
+        ]
+      ]
+    },
+    "4955": {
+      "itemId": 9801,
+      "name": "Cooking cape",
+      "maleModels": [
+        18924,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18971,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          51738
+        ],
+        [
+          54183,
+          51986
+        ],
+        [
+          54503,
+          51084
+        ],
+        [
+          960,
+          51738
+        ],
+        [
+          22464,
+          51862
+        ],
+        [
+          43968,
+          51986
+        ]
+      ]
+    },
+    "4975": {
+      "itemId": 9804,
+      "name": "Firemaking cape",
+      "maleModels": [
+        18932,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18975,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          5056
+        ],
+        [
+          54183,
+          4027
+        ],
+        [
+          54503,
+          4023
+        ],
+        [
+          960,
+          5056
+        ],
+        [
+          22464,
+          4027
+        ],
+        [
+          43968,
+          4023
+        ]
+      ]
+    },
+    "4957": {
+      "itemId": 9807,
+      "name": "Woodcutting cape",
+      "maleModels": [
+        18955,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18991,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          6579
+        ],
+        [
+          54183,
+          6819
+        ],
+        [
+          54503,
+          6938
+        ],
+        [
+          960,
+          6579
+        ],
+        [
+          22464,
+          6699
+        ],
+        [
+          43968,
+          6819
+        ]
+      ]
+    },
+    "4963": {
+      "itemId": 9810,
+      "name": "Farming cape",
+      "maleModels": [
+        18929,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18974,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          21916
+        ],
+        [
+          54183,
+          22412
+        ],
+        [
+          54503,
+          22036
+        ],
+        [
+          960,
+          21916
+        ],
+        [
+          22464,
+          22036
+        ],
+        [
+          43968,
+          22412
+        ]
+      ]
+    },
+    "4945": {
+      "itemId": 9813,
+      "name": "Quest point cape",
+      "maleModels": [
+        18946,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        18984,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          43096
+        ],
+        [
+          54183,
+          43113
+        ],
+        [
+          54503,
+          43109
+        ],
+        [
+          960,
+          43113
+        ],
+        [
+          22464,
+          43096
+        ],
+        [
+          43968,
+          43096
+        ]
+      ]
+    },
+    "5158": {
+      "itemId": 9948,
+      "name": "Hunter cape",
+      "maleModels": [
+        19834,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        19874,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          57280,
+          8487
+        ],
+        [
+          54183,
+          8367
+        ],
+        [
+          54503,
+          8367
+        ],
+        [
+          960,
+          8487
+        ],
+        [
+          22464,
+          8478
+        ],
+        [
+          43968,
+          8598
+        ]
+      ]
+    },
+    "2709": {
+      "itemId": 19476,
+      "name": "Achievement diary cape",
+      "maleModels": [
+        28203,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        29051,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": []
+    },
+    "4751": {
+      "itemId": 13221,
+      "name": "Music cape",
+      "maleModels": [
+        29317,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        30840,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": [
+        [
+          960,
+          127
+        ],
+        [
+          22464,
+          115
+        ],
+        [
+          43968,
+          8
+        ]
+      ]
+    },
+    "7121": {
+      "itemId": 13280,
+      "name": "Max cape",
+      "maleModels": [
+        29616,
+        -1,
+        -1
+      ],
+      "femaleModels": [
+        29624,
+        -1,
+        -1
+      ],
+      "maleOffset": 0,
+      "femaleOffset": 0,
+      "recolors": []
+    }
+  },
+  "spotanimModels": [
+    19069,
+    19070,
+    19071,
+    19072,
+    19073,
+    19074,
+    19075,
+    19076,
+    19077,
+    19078,
+    19079,
+    19080,
+    19081,
+    19082,
+    19083,
+    19084,
+    19085,
+    19086,
+    19087,
+    19088,
+    19089,
+    19090,
+    19091,
+    19092,
+    19978,
+    29172,
+    35330
+  ],
+  "missingModels": []
+}

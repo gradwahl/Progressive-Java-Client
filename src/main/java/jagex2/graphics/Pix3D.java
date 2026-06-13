@@ -24,26 +24,28 @@ public class Pix3D extends Pix2D {
 	@ObfuscatedName("ib.L")
 	public static int[] cosTable = new int[2048];
 
+	public static final int TEXTURE_COUNT = 256;
+
 	@ObfuscatedName("ib.O")
-	public static Pix8[] textures = new Pix8[50];
+	public static Pix8[] textures = new Pix8[TEXTURE_COUNT];
 
 	@ObfuscatedName("ib.P")
-	public static boolean[] textureTranslucent = new boolean[50];
+	public static boolean[] textureTranslucent = new boolean[TEXTURE_COUNT];
 
 	@ObfuscatedName("ib.Q")
-	public static int[] averageTextureRgb = new int[50];
+	public static int[] averageTextureRgb = new int[TEXTURE_COUNT];
 
 	@ObfuscatedName("ib.T")
-	public static int[][] activeTexels = new int[50][];
+	public static int[][] activeTexels = new int[TEXTURE_COUNT][];
 
 	@ObfuscatedName("ib.U")
-	public static int[] textureCycle = new int[50];
+	public static int[] textureCycle = new int[TEXTURE_COUNT];
 
 	@ObfuscatedName("ib.W")
 	public static int[] colourTable = new int[65536];
 
 	@ObfuscatedName("ib.X")
-	public static int[][] texturePalette = new int[50][];
+	public static int[][] texturePalette = new int[TEXTURE_COUNT][];
 
 	@ObfuscatedName("ib.F")
 	public static int trans;
@@ -121,7 +123,7 @@ public class Pix3D extends Pix2D {
 	@ObfuscatedName("ib.e(I)V")
 	public static void clearTexels() {
 		texelPool = null;
-		for (int var2 = 0; var2 < 50; var2++) {
+		for (int var2 = 0; var2 < TEXTURE_COUNT; var2++) {
 			activeTexels[var2] = null;
 		}
 	}
@@ -137,7 +139,7 @@ public class Pix3D extends Pix2D {
 		} else {
 			texelPool = new int[poolSize][65536];
 		}
-		for (int var2 = 0; var2 < 50; var2++) {
+		for (int var2 = 0; var2 < TEXTURE_COUNT; var2++) {
 			activeTexels[var2] = null;
 		}
 	}
@@ -145,7 +147,7 @@ public class Pix3D extends Pix2D {
 	@ObfuscatedName("ib.a(Lyb;Z)V")
 	public static void unpackTextures(JagFile arg0) {
 		loadedTextures = 0;
-		for (int var3 = 0; var3 < 50; var3++) {
+		for (int var3 = 0; var3 < TEXTURE_COUNT; var3++) {
 			try {
 				textures[var3] = new Pix8(arg0, String.valueOf(var3), 0);
 				if (lowMem && textures[var3].owi == 128) {
@@ -153,7 +155,7 @@ public class Pix3D extends Pix2D {
 				} else {
 					textures[var3].trim();
 				}
-				loadedTextures++;
+				loadedTextures = var3 + 1;
 			} catch (Exception var4) {
 			}
 		}
@@ -317,7 +319,7 @@ public class Pix3D extends Pix2D {
 				colourTable[var5++] = var35;
 			}
 		}
-		for (int var36 = 0; var36 < 50; var36++) {
+		for (int var36 = 0; var36 < TEXTURE_COUNT; var36++) {
 			if (textures[var36] != null) {
 				int[] var37 = textures[var36].bpal;
 				texturePalette[var36] = new int[var37.length];
@@ -326,7 +328,7 @@ public class Pix3D extends Pix2D {
 				}
 			}
 		}
-		for (int var39 = 0; var39 < 50; var39++) {
+		for (int var39 = 0; var39 < TEXTURE_COUNT; var39++) {
 			pushTexture(var39);
 		}
 	}

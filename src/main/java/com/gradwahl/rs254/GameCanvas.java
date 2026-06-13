@@ -118,8 +118,12 @@ public final class GameCanvas extends Canvas implements Runnable {
     }
 
     private void onKeyPressed(KeyEvent e) {
-        if (state != State.TITLE) return;
         int code = e.getKeyCode();
+        if (code == KeyEvent.VK_F12) {
+            com.gradwahl.rs254.gl.LiveTuner.toggle();
+            return;
+        }
+        if (state != State.TITLE) return;
         if (code == KeyEvent.VK_TAB) {
             focusUser = !focusUser;
         } else if (code == KeyEvent.VK_BACK_SPACE) {

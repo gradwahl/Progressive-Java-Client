@@ -11,7 +11,9 @@ import jagex2.sound.Wave;
 import jagex2.wordenc.WordFilter;
 import jagex2.wordenc.WordPack;
 import sign.signlink;
+import com.gradwahl.rs254.gl.OsrsFixedGameframe;
 import com.gradwahl.rs254.gl.GLRenderer;
+import com.gradwahl.rs254.gl.LiveTuner;
 import com.gradwahl.rs254.ClientDebugger;
 
 import java.awt.*;
@@ -28,6 +30,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.zip.CRC32;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 
 @ObfuscatedName("client")
 public class Client extends GameShell {
@@ -388,6 +392,8 @@ public class Client extends GameShell {
 	@ObfuscatedName("client.If")
 	public boolean redrawFrame = false;
 
+	private int lastLiveTunerVersion = -1;
+
 	@ObfuscatedName("client.Lf")
 	public LinkList projectiles = new LinkList();
 
@@ -557,9 +563,6 @@ public class Client extends GameShell {
 	@ObfuscatedName("client.Qi")
 	public boolean focused = true;
 
-	@ObfuscatedName("client.Vi")
-	public boolean midiFading = false;
-
 	@ObfuscatedName("client.Zi")
 	public boolean chatbackInputOpen = false;
 
@@ -587,6 +590,8 @@ public class Client extends GameShell {
 	@ObfuscatedName("client.mj")
 	public byte[] textureBuffer = new byte[16384];
 
+	private int lastClockSecond = -1;
+
 	@ObfuscatedName("client.oj")
 	public LinkList locChanges = new LinkList();
 
@@ -598,6 +603,107 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.Aj")
 	public int[] minimapMaskLineLengths = new int[151];
+
+	// --- Modern OSRS round minimap (active when OsrsUi sprites are loaded) ---
+	// Dest pivot for minimap blips/hints (parametrised so the round map can recentre them).
+	public int minimapPivotX = 98;
+	public int minimapPivotY = 79;
+	// Circular scanline mask for the round minimap.
+	public int[] roundMaskLineOffsets = new int[151];
+	public int[] roundMaskLineLengths = new int[151];
+	// Region-space geometry of the round minimap (see buildRoundMinimap()).
+	// RM_CX/RM_CY place the OSRS minimap frame in the fixed gameframe.
+	// RM_MAP_CX/RM_MAP_CY must use the same centre, otherwise the minimap
+	// content sits off-centre and the grey/stone backdrop shows inside the frame.
+	public static final int RM_CX = 115, RM_CY = 73, RM_R = 75;
+	public static final int RM_MAP_CX = RM_CX, RM_MAP_CY = RM_CY;
+	private static final int RM_EDGE_BLEED = 2;
+	public static final int RM_REGION_W = 249, RM_REGION_H = 172;
+	public static final int RM_DRAW_X = OsrsFixedGameframe.MINIMAP_X, RM_DRAW_Y = OsrsFixedGameframe.MINIMAP_Y;
+	private boolean roundMinimapReady = false;
+	// Backdrop stone shown behind transparent scallops of the OSRS frame sprites
+	// (sampled from the OSRS inventory panel so it matches the surrounding frame).
+	public static final int FRAME_STONE = 0x544B3E;
+
+	/** Builds the circular minimap mask once. The rotate-blit centres its 147x151
+	 *  window at dest (baseX+73, baseY+75); a row's run is [73-hw, 73+hw] relative
+	 *  to baseX, hw = sqrt(R^2 - (row-75)^2). Independent of where the region sits. */
+	public void buildRoundMinimap() {
+		for (int i = 0; i < 151; i++) {
+			int dy = i - 75;
+			if (dy >= -RM_R && dy <= RM_R) {
+				int hw = (int) Math.sqrt((double) (RM_R * RM_R - dy * dy));
+				// Bleed the minimap under the OSRS frame so the transparent alpha edge
+				// does not show the stone backdrop as a grey outline.
+				this.roundMaskLineOffsets[i] = Math.max(0, RM_R - hw - RM_EDGE_BLEED);
+				this.roundMaskLineLengths[i] = Math.min(2 * RM_R + 1 - this.roundMaskLineOffsets[i], 2 * hw + RM_EDGE_BLEED * 2);
+			} else {
+				this.roundMaskLineOffsets[i] = 0;
+				this.roundMaskLineLengths[i] = 0;
+			}
+		}
+		this.minimapPivotX = this.minimapPivotX();
+		this.minimapPivotY = this.minimapPivotY();
+		this.roundMinimapReady = true;
+	}
+
+	private int minimapPivotX() {
+		return RM_MAP_CX + LiveTuner.minimapOffsetX;
+	}
+
+	private int minimapPivotY() {
+		return RM_MAP_CY + LiveTuner.minimapOffsetY;
+	}
+
+	private int minimapImageBaseX() {
+		return RM_MAP_CX - RM_R + LiveTuner.minimapOffsetX;
+	}
+
+	private int minimapImageBaseY() {
+		return RM_MAP_CY - 75 + LiveTuner.minimapOffsetY;
+	}
+
+	private int chatBoxScreenX() {
+		return OsrsFixedGameframe.CHAT_X + LiveTuner.chatBoxOffsetX;
+	}
+
+	private int chatBoxScreenY() {
+		return OsrsFixedGameframe.CHAT_Y + LiveTuner.chatBoxOffsetY;
+	}
+
+	private int chatButtonBarScreenX() {
+		return OsrsFixedGameframe.CHAT_X + LiveTuner.chatButtonBgOffsetX;
+	}
+
+	private int chatButtonBarScreenY() {
+		return OsrsFixedGameframe.CHAT_TAB_BACKING_Y + LiveTuner.chatButtonBgOffsetY;
+	}
+
+	private int sidebarPanelScreenX() {
+		return OsrsFixedGameframe.SIDEBAR_PANEL_X + LiveTuner.inventoryBgOffsetX;
+	}
+
+	private int sidebarPanelScreenY() {
+		return OsrsFixedGameframe.SIDEBAR_PANEL_Y + LiveTuner.inventoryBgOffsetY;
+	}
+
+	private int sidebarContentLocalX() {
+		return LiveTuner.inventoryContentOffsetX;
+	}
+
+	private int sidebarContentLocalY() {
+		return LiveTuner.inventoryContentOffsetY;
+	}
+
+	private int sidebarContentScreenX() {
+		// The original component-origin was 553 while the panel image was drawn at 548.
+		// Keep that 5px interface inset, then add the tunable panel/content offsets.
+		return 553 + LiveTuner.inventoryBgOffsetX + LiveTuner.inventoryContentOffsetX;
+	}
+
+	private int sidebarContentScreenY() {
+		return 205 + LiveTuner.inventoryBgOffsetY + LiveTuner.inventoryContentOffsetY;
+	}
 
 	@ObfuscatedName("client.Bj")
 	public boolean[] cameraModifierEnabled = new boolean[5];
@@ -730,6 +836,13 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.pd")
 	public int runenergy;
+
+	/** True while the run toggle is ON (option_run varp clientcode 7). */
+	public boolean runEnabled = false;
+
+	/** Local UI-facing poison state for the HP orb in rev-254. */
+	public boolean playerPoisoned = false;
+
 
 	@ObfuscatedName("client.rd")
 	public int chatCount;
@@ -1136,6 +1249,14 @@ public class Client extends GameShell {
 	@ObfuscatedName("client.Ee")
 	public Pix8 imageTitlebutton;
 
+	public Pix32 imageTitleMuteUnmuted;
+	public Pix32 imageTitleMuteMuted;
+	public java.awt.image.BufferedImage bufMuteUnmuted;
+	public java.awt.image.BufferedImage bufMuteMuted;
+	public jagex2.graphics.PixMap mutePixMapUnmuted;
+	public jagex2.graphics.PixMap mutePixMapMuted;
+	public boolean musicMuted = false;
+
 	@ObfuscatedName("client.Ke")
 	public Pix8 imageRedstone1;
 
@@ -1231,6 +1352,9 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.Wh")
 	public PixMap areaBackvmid2;
+
+	public PixMap areaLeftPillarA;
+	public PixMap areaLeftPillarB;
 
 	@ObfuscatedName("client.Xh")
 	public PixMap areaBackvmid3;
@@ -1365,7 +1489,7 @@ public class Client extends GameShell {
 				signlink.storeid = Integer.parseInt(arg0[4]);
 				signlink.startpriv(InetAddress.getLocalHost());
 				Client var1 = new Client();
-				var1.initApplication(765, 503);
+				var1.initApplication(OsrsFixedGameframe.CANVAS_W, OsrsFixedGameframe.CANVAS_H);
 			} else {
 				System.out.println("Usage: node-id, port-offset, [lowmem/highmem], [free/members], storeid");
 			}
@@ -1388,7 +1512,7 @@ public class Client extends GameShell {
 		} else {
 			membersWorld = true;
 		}
-		this.initApplet(503, 765);
+		this.initApplet(OsrsFixedGameframe.CANVAS_H, OsrsFixedGameframe.CANVAS_W);
 	}
 
 	public void run() {
@@ -1419,7 +1543,14 @@ public class Client extends GameShell {
 
 	public URL getCodeBase() {
 		try {
+<<<<<<< Updated upstream
 			URL url = new URL("http://127.0.0.1:" + (portOffset + 80));
+=======
+			String host = System.getProperty("rs254.host", "127.0.0.1");
+			int httpPort = Integer.getInteger("rs254.httpPort", portOffset + 80);
+			String scheme = Boolean.getBoolean("rs254.secure") ? "https" : "http";
+			URL url = new URL(scheme, host, httpPort, "/");
+>>>>>>> Stashed changes
 			signlink.codeBase = url;
 			return url;
 		} catch (Exception var1) {
@@ -1433,7 +1564,7 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.L(I)Ljava/lang/String;")
 	public String getHost() {
-		return frame == null ? "127.0.0.1" : "runescape.com";
+		return System.getProperty("rs254.host", frame == null ? "127.0.0.1" : "runescape.com");
 	}
 
 	@ObfuscatedName("client.c(I)Ljava/awt/Component;")
@@ -1448,7 +1579,15 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.h(I)Ljava/net/Socket;")
 	public Socket openSocket(int arg0) throws IOException {
-		return signlink.mainapp == null ? new Socket(InetAddress.getByName(this.getCodeBase().getHost()), arg0) : signlink.opensocket(arg0);
+		int port = Integer.getInteger("rs254.gamePort", arg0);
+		if (signlink.mainapp == null) {
+			URL codeBase = this.getCodeBase();
+			if (codeBase == null) {
+				throw new IOException("could not resolve codebase");
+			}
+			return new Socket(InetAddress.getByName(codeBase.getHost()), port);
+		}
+		return signlink.opensocket(port);
 	}
 
 	@ObfuscatedName("client.a(Ljava/lang/Runnable;I)V")
@@ -1464,19 +1603,16 @@ public class Client extends GameShell {
 	}
 
 	@ObfuscatedName("client.a(IZ[B)V")
-	public void saveMidi(boolean arg1, byte[] arg2) {
-		signlink.midifade = arg1 ? 1 : 0;
+	public void saveMidi(byte[] arg2) {
 		signlink.midisave(arg2, arg2.length);
 	}
 
 	@ObfuscatedName("client.f(Z)V")
 	public void stopMidi() {
-		signlink.midifade = 0;
 		signlink.midistop();
 	}
 
 	public void pauseMidi() {
-		signlink.midifade = 0;
 		signlink.midipause();
 	}
 
@@ -1542,7 +1678,6 @@ public class Client extends GameShell {
 			t.printStackTrace(System.err);
 			throw new RuntimeException(t);
 		}
-		if (super.frame != null) super.frame.setVisible(false);
 		boolean var1 = false;
 		String var2 = this.getHost();
 		if (var2.endsWith("jagex.com")) {
@@ -1570,6 +1705,9 @@ public class Client extends GameShell {
 			var1 = true;
 		}
 		if (var2.endsWith("127.0.0.1")) {
+			var1 = true;
+		}
+		if (var2.equalsIgnoreCase("localhost")) {
 			var1 = true;
 		}
 		if (!var1) {
@@ -1636,7 +1774,6 @@ public class Client extends GameShell {
 			Model.init(this.onDemand.getFileCount(0), this.onDemand);
 			if (!lowMem) {
 				this.midiSong = 0;
-				this.midiFading = false;
 				this.onDemand.request(2, this.midiSong);
 				while (this.onDemand.remaining() > 0) {
 					this.onDemandLoop();
@@ -1763,6 +1900,7 @@ public class Client extends GameShell {
 			this.imageCompass = new Pix32(var11, "compass", 0);
 			this.imageMapedge = new Pix32(var11, "mapedge", 0);
 			this.imageMapedge.trim();
+			com.gradwahl.rs254.gl.OsrsUi.load(sign.signlink.findcachedir(), this.getBaseComponent());
 			try {
 				for (int var34 = 0; var34 < 50; var34++) {
 					this.imageMapscene[var34] = new Pix8(var11, "mapscene", var34);
@@ -1821,26 +1959,80 @@ public class Client extends GameShell {
 				this.imageModIcons[var39] = new Pix8(var11, "mod_icons", var39);
 			}
 			Pix32 var40 = new Pix32(var11, "backleft1", 0);
-			this.areaBackleft1 = new PixMap(this.getBaseComponent(), var40.wi, var40.hi);
-			var40.quickPlotSprite(0, 0);
+			Pix32 osrsMinimapSideLeft = com.gradwahl.rs254.gl.OsrsUi.get("minimap_side_left");
+			if (osrsMinimapSideLeft != null) {
+				this.areaBackleft1 = new PixMap(this.getBaseComponent(), osrsMinimapSideLeft.wi, osrsMinimapSideLeft.hi);
+				osrsMinimapSideLeft.plotAlpha(0, 0);
+			} else {
+				this.areaBackleft1 = new PixMap(this.getBaseComponent(), var40.wi, var40.hi);
+				var40.quickPlotSprite(0, 0);
+			}
 			Pix32 var41 = new Pix32(var11, "backleft2", 0);
-			this.areaBackleft2 = new PixMap(this.getBaseComponent(), var41.wi, var41.hi);
-			var41.quickPlotSprite(0, 0);
+			Pix32 osrsMinimapSideRight = com.gradwahl.rs254.gl.OsrsUi.get("minimap_side_right");
+			if (osrsMinimapSideRight != null) {
+				this.areaBackleft2 = new PixMap(this.getBaseComponent(), osrsMinimapSideRight.wi, osrsMinimapSideRight.hi);
+				osrsMinimapSideRight.plotAlpha(0, 0);
+			} else {
+				this.areaBackleft2 = new PixMap(this.getBaseComponent(), var41.wi, var41.hi);
+				var41.quickPlotSprite(0, 0);
+			}
 			Pix32 var42 = new Pix32(var11, "backright1", 0);
-			this.areaBackright1 = new PixMap(this.getBaseComponent(), var42.wi, var42.hi);
-			var42.quickPlotSprite(0, 0);
+			Pix32 osrsOuterRight = com.gradwahl.rs254.gl.OsrsUi.get("sidebar_outer_right");
+			if (osrsOuterRight != null) {
+				this.areaBackright1 = new PixMap(this.getBaseComponent(), osrsOuterRight.wi, osrsOuterRight.hi);
+				osrsOuterRight.plotAlpha(0, 0);
+			} else {
+				this.areaBackright1 = new PixMap(this.getBaseComponent(), var42.wi, var42.hi);
+				var42.quickPlotSprite(0, 0);
+			}
 			Pix32 var43 = new Pix32(var11, "backright2", 0);
-			this.areaBackright2 = new PixMap(this.getBaseComponent(), var43.wi, var43.hi);
-			var43.quickPlotSprite(0, 0);
+			Pix32 osrsPillarRight = com.gradwahl.rs254.gl.OsrsUi.get("right_panel_tall_pillar");
+			if (osrsPillarRight != null) {
+				this.areaBackright2 = new PixMap(this.getBaseComponent(), osrsPillarRight.wi, osrsPillarRight.hi);
+				osrsPillarRight.plotAlpha(0, 0);
+			} else {
+				this.areaBackright2 = new PixMap(this.getBaseComponent(), var43.wi, var43.hi);
+				var43.quickPlotSprite(0, 0);
+			}
 			Pix32 var44 = new Pix32(var11, "backtop1", 0);
-			this.areaBacktop1 = new PixMap(this.getBaseComponent(), var44.wi, var44.hi);
-			var44.quickPlotSprite(0, 0);
+			Pix32 osrsFrameTop = com.gradwahl.rs254.gl.OsrsUi.get("frame_top");
+			if (osrsFrameTop != null) {
+				this.areaBacktop1 = new PixMap(this.getBaseComponent(), osrsFrameTop.wi, osrsFrameTop.hi);
+				osrsFrameTop.plotAlpha(0, 0);
+			} else {
+				this.areaBacktop1 = new PixMap(this.getBaseComponent(), var44.wi, var44.hi);
+				var44.quickPlotSprite(0, 0);
+			}
 			Pix32 var45 = new Pix32(var11, "backvmid1", 0);
-			this.areaBackvmid1 = new PixMap(this.getBaseComponent(), var45.wi, var45.hi);
-			var45.quickPlotSprite(0, 0);
+			Pix32 osrsOuterLeft = com.gradwahl.rs254.gl.OsrsUi.get("sidebar_outer_left");
+			if (osrsOuterLeft != null) {
+				this.areaBackvmid1 = new PixMap(this.getBaseComponent(), osrsOuterLeft.wi, osrsOuterLeft.hi);
+				osrsOuterLeft.plotAlpha(0, 0);
+			} else {
+				this.areaBackvmid1 = new PixMap(this.getBaseComponent(), var45.wi, var45.hi);
+				var45.quickPlotSprite(0, 0);
+			}
 			Pix32 var46 = new Pix32(var11, "backvmid2", 0);
-			this.areaBackvmid2 = new PixMap(this.getBaseComponent(), var46.wi, var46.hi);
-			var46.quickPlotSprite(0, 0);
+			// Paired with the right-side swap above: load the RIGHT sprite into the
+			// left-side PixMap. The F12 tuner still moves the left/right positions.
+			Pix32 osrsPillarLeft = com.gradwahl.rs254.gl.OsrsUi.get("right_panel_tall_pillar");
+			if (osrsPillarLeft != null) {
+				this.areaBackvmid2 = new PixMap(this.getBaseComponent(), osrsPillarLeft.wi, osrsPillarLeft.hi);
+				osrsPillarLeft.plotAlpha(0, 0);
+			} else {
+				this.areaBackvmid2 = new PixMap(this.getBaseComponent(), var46.wi, var46.hi);
+				var46.quickPlotSprite(0, 0);
+			}
+			Pix32 cbPillarLeft = com.gradwahl.rs254.gl.OsrsUi.get("chatbox_pillar_left");
+			if (cbPillarLeft != null) {
+				this.areaLeftPillarA = new PixMap(this.getBaseComponent(), cbPillarLeft.wi, cbPillarLeft.hi);
+				cbPillarLeft.plotAlpha(0, 0);
+			}
+			Pix32 cbPillarRight = com.gradwahl.rs254.gl.OsrsUi.get("chatbox_pillar_right");
+			if (cbPillarRight != null) {
+				this.areaLeftPillarB = new PixMap(this.getBaseComponent(), cbPillarRight.wi, cbPillarRight.hi);
+				cbPillarRight.plotAlpha(0, 0);
+			}
 			Pix32 var47 = new Pix32(var11, "backvmid3", 0);
 			this.areaBackvmid3 = new PixMap(this.getBaseComponent(), var47.wi, var47.hi);
 			var47.quickPlotSprite(0, 0);
@@ -1871,6 +2063,7 @@ public class Client extends GameShell {
 			NpcType.unpack(var9);
 			IdkType.unpack(var9);
 			SpotAnimType.unpack(var9);
+			com.gradwahl.rs254.overlay.SkillcapeOverlay.install();
 			VarpType.unpack(var9);
 			VarBitType.unpack(var9);
 			ObjType.membersWorld = membersWorld;
@@ -1916,7 +2109,11 @@ public class Client extends GameShell {
 				this.minimapMaskLineOffsets[var61 - 5] = var62 - 25;
 				this.minimapMaskLineLengths[var61 - 5] = var63 - var62;
 			}
-			Pix3D.initWH(479, 96);
+			if (com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null) {
+				Pix3D.initWH(519, 142);
+			} else {
+				Pix3D.initWH(479, 96);
+			}
 			this.areaChatbackOffset = Pix3D.scanline;
 			Pix3D.initWH(190, 261);
 			this.areaSidebarOffset = Pix3D.scanline;
@@ -1934,6 +2131,8 @@ public class Client extends GameShell {
 			this.mouseTracking = new MouseTracking(this);
 			this.startThread(this.mouseTracking, 10);
 		} catch (Exception var81) {
+			System.err.println("[LOAD] Startup failed at '" + this.lastProgressMessage + "' (" + this.lastProgressPercent + "%)");
+			var81.printStackTrace(System.err);
 			signlink.reporterror("loaderror " + this.lastProgressMessage + " " + this.lastProgressPercent);
 			this.errorLoading = true;
 		}
@@ -2039,6 +2238,8 @@ public class Client extends GameShell {
 		this.areaBackvmid1 = null;
 		this.areaBackvmid2 = null;
 		this.areaBackvmid3 = null;
+		this.areaLeftPillarA = null;
+		this.areaLeftPillarB = null;
 		this.areaBackhmid2 = null;
 		this.imageInvback = null;
 		this.imageMapback = null;
@@ -2085,6 +2286,7 @@ public class Client extends GameShell {
 		this.menuParamA = null;
 		this.menuOption = null;
 		this.varps = null;
+		this.runEnabled = false;
 		this.activeMapFunctionX = null;
 		this.activeMapFunctionZ = null;
 		this.activeMapFunctions = null;
@@ -2367,7 +2569,7 @@ public class Client extends GameShell {
 				AnimFrame.unpack(var2.data);
 			}
 			if (var2.archive == 2 && var2.file == this.midiSong && var2.data != null) {
-				this.saveMidi(this.midiFading, var2.data);
+				this.saveMidi(var2.data);
 			}
 			if (var2.archive == 3 && this.sceneState == 1) {
 				for (int var3 = 0; var3 < this.mapBuildGroundData.length; var3++) {
@@ -2395,6 +2597,21 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.l(B)V")
 	public void titleScreenLoop() {
+		// Mute button: bottom-right of the 360x200 title box drawn at canvas (202, 171)
+		if (super.mouseClickButton == 1) {
+			int muteBtnX = super.canvasWidth - 47;  // 37px wide + 10px right margin
+			int muteBtnY = super.canvasHeight - 48; // 38px tall + 10px bottom margin
+			if (super.mouseClickX >= muteBtnX && super.mouseClickX < muteBtnX + 37
+					&& super.mouseClickY >= muteBtnY && super.mouseClickY < muteBtnY + 38) {
+				this.musicMuted = !this.musicMuted;
+				if (this.musicMuted) {
+					this.applyMute();
+				} else {
+					this.applyUnmute();
+				}
+				super.mouseClickButton = 0;
+			}
+		}
 		if (this.loginscreen == 0) {
 			int var2 = super.canvasWidth / 2 - 80;
 			int var3 = super.canvasHeight / 2 + 20;
@@ -2551,6 +2768,17 @@ public class Client extends GameShell {
 				}
 				this.login(arg0, arg1, arg2);
 			} else if (var8 == 2) {
+				if (glRenderer != null) {
+					glRenderer.setLoggedInUsername(arg0);
+					if (super.frame != null) {
+						glRenderer.showWindowAt(super.frame.getX(), super.frame.getY());
+					} else {
+						glRenderer.showWindow();
+					}
+				}
+				if (super.frame != null) {
+					super.frame.setVisible(false);
+				}
 				this.staffmodlevel = this.stream.read();
 				mouseTracked = this.stream.read() == 1;
 				InputTracking.deactivate();
@@ -2600,6 +2828,7 @@ public class Client extends GameShell {
 					this.npcs[var14] = null;
 				}
 				localPlayer = this.players[this.LOCAL_PLAYER_INDEX] = new ClientPlayer();
+				this.playerPoisoned = false;
 				this.projectiles.clear();
 				this.spotanims.clear();
 				for (int var15 = 0; var15 < 4; var15++) {
@@ -2754,8 +2983,13 @@ public class Client extends GameShell {
 		System.gc();
 		this.stopMidi();
 		this.nextMidiSong = -1;
-		this.midiSong = -1;
 		this.nextMusicDelay = 0;
+		if (!lowMem && this.midiActive && !this.musicMuted) {
+			this.midiSong = 0; // scape main
+			this.onDemand.request(2, 0);
+		} else {
+			this.midiSong = -1;
+		}
 	}
 
 	@ObfuscatedName("client.l(I)V")
@@ -2785,15 +3019,30 @@ public class Client extends GameShell {
 		this.imageTitle6 = null;
 		this.imageTitle7 = null;
 		this.imageTitle8 = null;
-		this.areaChatback = new PixMap(this.getBaseComponent(), 479, 96);
-		this.areaMapback = new PixMap(this.getBaseComponent(), 172, 156);
+		if (com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null) {
+			this.areaChatback = new PixMap(this.getBaseComponent(), 519, 142);
+		} else {
+			this.areaChatback = new PixMap(this.getBaseComponent(), 479, 96);
+		}
+		// Always use the modern round minimap (remove legacy square minimap fallback).
+		this.areaMapback = new PixMap(this.getBaseComponent(), RM_REGION_W, RM_REGION_H);
 		Pix2D.cls();
-		this.imageMapback.plotSprite(0, 0);
+		this.buildRoundMinimap();
 		this.areaSidebar = new PixMap(this.getBaseComponent(), 190, 261);
-		this.areaViewport = new PixMap(this.getBaseComponent(), 512, 334);
-		if (glRenderer != null) GLRenderer.viewportPixels = this.areaViewport.data;
+		this.areaViewport = new PixMap(this.getBaseComponent(), OsrsFixedGameframe.VIEWPORT_W, OsrsFixedGameframe.VIEWPORT_H);
+		if (glRenderer != null) {
+			GLRenderer.viewportPixels = this.areaViewport.data;
+			GLRenderer.vpDrawX = OsrsFixedGameframe.VIEWPORT_X;
+			GLRenderer.vpDrawY = OsrsFixedGameframe.VIEWPORT_Y;
+			GLRenderer.vpW = OsrsFixedGameframe.VIEWPORT_W;
+			GLRenderer.vpH = OsrsFixedGameframe.VIEWPORT_H;
+		}
 		Pix2D.cls();
-		this.areaBackbase1 = new PixMap(this.getBaseComponent(), 496, 50);
+		// Modern OSRS chat tabs only need the 519x23 tab backing strip.
+		// The legacy 496x50 backbase is kept for the 2004 gameframe path.
+		this.areaBackbase1 = com.gradwahl.rs254.gl.OsrsUi.get("chat_tab_backing") != null
+				? new PixMap(this.getBaseComponent(), 519, 26)
+				: new PixMap(this.getBaseComponent(), 496, 50);
 		this.areaBackbase2 = new PixMap(this.getBaseComponent(), 269, 37);
 		this.areaBackhmid1 = new PixMap(this.getBaseComponent(), 249, 45);
 		this.redrawFrame = true;
@@ -2801,6 +3050,11 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.F(I)V")
 	public void gameLoop() {
+		int currentSecond = LocalTime.now().getSecond();
+		if (currentSecond != this.lastClockSecond) {
+			this.lastClockSecond = currentSecond;
+			this.redrawPrivacySettings = true;
+		}
 		if (this.systemUpdateTimer > 1) {
 			this.systemUpdateTimer--;
 		}
@@ -3055,6 +3309,8 @@ public class Client extends GameShell {
 				this.redrawChatback = true;
 				super.mouseClickButton = 0;
 			}
+			this.handleCompassInput();
+			this.handleOrbInput();
 			this.handleMouseInput();
 			this.handleMinimapInput();
 			this.handleTabInput();
@@ -3172,7 +3428,7 @@ public class Client extends GameShell {
 		this.fontPlain12.centreString(143, "Connection lost", 256, 16777215);
 		this.fontPlain12.centreString(159, "Please wait - attempting to reestablish", 257, 0);
 		this.fontPlain12.centreString(158, "Please wait - attempting to reestablish", 256, 16777215);
-		this.areaViewport.draw(4, 4, super.graphics);
+		this.areaViewport.draw(OsrsFixedGameframe.VIEWPORT_Y, OsrsFixedGameframe.VIEWPORT_X, super.graphics);
 		this.flagSceneTileX = 0;
 		ClientStream var2 = this.stream;
 		this.ingame = false;
@@ -3192,7 +3448,7 @@ public class Client extends GameShell {
 			this.areaViewport.bind();
 			this.fontPlain12.centreString(151, "Loading - please wait.", 257, 0);
 			this.fontPlain12.centreString(150, "Loading - please wait.", 256, 16777215);
-			this.areaViewport.draw(4, 4, super.graphics);
+			this.areaViewport.draw(OsrsFixedGameframe.VIEWPORT_Y, OsrsFixedGameframe.VIEWPORT_X, super.graphics);
 			this.sceneState = 1;
 			this.sceneLoadStartTime = System.currentTimeMillis();
 		}
@@ -3517,7 +3773,6 @@ public class Client extends GameShell {
 			}
 			if (this.nextMusicDelay == 0 && this.midiActive && !lowMem) {
 				this.midiSong = this.nextMidiSong;
-				this.midiFading = false;
 				this.onDemand.request(2, this.midiSong);
 			}
 		}
@@ -3544,11 +3799,13 @@ public class Client extends GameShell {
 			this.overMainLayerId = this.lastOverLayerId;
 		}
 		this.lastOverLayerId = 0;
-		if (super.mouseX > 553 && super.mouseY > 205 && super.mouseX < 743 && super.mouseY < 466) {
+		int sideInputX = this.sidebarContentScreenX();
+		int sideInputY = this.sidebarContentScreenY();
+		if (super.mouseX > sideInputX && super.mouseY > sideInputY && super.mouseX < sideInputX + 190 && super.mouseY < sideInputY + 261) {
 			if (this.sideLayerId != -1) {
-				this.handleComponentInput(super.mouseY, 205, IfType.list[this.sideLayerId], 553, super.mouseX, 0);
+				this.handleComponentInput(super.mouseY, sideInputY, IfType.list[this.sideLayerId], sideInputX, super.mouseX, 0);
 			} else if (this.tabInterfaceId[this.sideTab] != -1) {
-				this.handleComponentInput(super.mouseY, 205, IfType.list[this.tabInterfaceId[this.sideTab]], 553, super.mouseX, 0);
+				this.handleComponentInput(super.mouseY, sideInputY, IfType.list[this.tabInterfaceId[this.sideTab]], sideInputX, super.mouseX, 0);
 			}
 		}
 		if (this.lastOverLayerId != this.overSideLayerId) {
@@ -3556,11 +3813,19 @@ public class Client extends GameShell {
 			this.overSideLayerId = this.lastOverLayerId;
 		}
 		this.lastOverLayerId = 0;
-		if (super.mouseX > 17 && super.mouseY > 357 && super.mouseX < 496 && super.mouseY < 453) {
+		int chatInputX = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenX() : 17;
+		int chatInputY = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenY() : 357;
+		int chatInputW = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? 519 : 479;
+		int chatInputH = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? 142 : 96;
+		if (super.mouseX > chatInputX && super.mouseY > chatInputY && super.mouseX < chatInputX + chatInputW && super.mouseY < chatInputY + chatInputH) {
 			if (this.chatLayerId != -1) {
-				this.handleComponentInput(super.mouseY, 357, IfType.list[this.chatLayerId], 17, super.mouseX, 0);
-			} else if (super.mouseY < 434 && super.mouseX < 426) {
-				this.handleChatMouseInput(super.mouseY - 357, super.mouseX - 17);
+				boolean modernDlg = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null;
+				int chatDialogYOff = modernDlg
+						? (357 - com.gradwahl.rs254.gl.OsrsFixedGameframe.CHAT_Y) + com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetY : 0;
+				int chatDialogXOff = modernDlg ? com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetX : 0;
+				this.handleComponentInput(super.mouseY, chatInputY + chatDialogYOff, IfType.list[this.chatLayerId], chatInputX + chatDialogXOff, super.mouseX, 0);
+			} else if (super.mouseY < chatInputY + chatInputH - 23 && super.mouseX < chatInputX + chatInputW - 93) {
+				this.handleChatMouseInput(super.mouseY - chatInputY, super.mouseX - chatInputX);
 			}
 		}
 		if (this.chatLayerId != -1 && this.lastOverLayerId != this.overChatLayerId) {
@@ -3653,11 +3918,12 @@ public class Client extends GameShell {
 
 	@ObfuscatedName("client.d(III)V")
 	public void handleChatMouseInput(int arg0, int arg2) {
+		int chatHitBase = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? 111 : 70;
 		int var4 = 0;
 		for (int var5 = 0; var5 < 100; var5++) {
 			if (this.messageText[var5] != null) {
 				int var6 = this.messageType[var5];
-				int var7 = 70 - var4 * 14 + this.chatScrollOffset + 4;
+				int var7 = chatHitBase - var4 * 14 + this.chatScrollOffset + 4;
 				if (var7 < -20) {
 					break;
 				}
@@ -3950,12 +4216,16 @@ public class Client extends GameShell {
 				var4 -= 4;
 			}
 			if (this.menuArea == 1) {
-				var3 -= 553;
-				var4 -= 205;
+				var3 -= this.sidebarContentScreenX();
+				var4 -= this.sidebarContentScreenY();
 			}
 			if (this.menuArea == 2) {
-				var3 -= 17;
-				var4 -= 357;
+				var3 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenX() : 17;
+				var4 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenY() : 357;
+			}
+			if (this.menuArea == 3) {
+				var3 -= RM_DRAW_X;
+				var4 -= RM_DRAW_Y;
 			}
 			if (var3 < this.menuX - 10 || var3 > this.menuX + this.menuWidth + 10 || var4 < this.menuY - 10 || var4 > this.menuY + this.menuHeight + 10) {
 				this.menuVisible = false;
@@ -3978,12 +4248,16 @@ public class Client extends GameShell {
 				var9 -= 4;
 			}
 			if (this.menuArea == 1) {
-				var8 -= 553;
-				var9 -= 205;
+				var8 -= this.sidebarContentScreenX();
+				var9 -= this.sidebarContentScreenY();
 			}
 			if (this.menuArea == 2) {
-				var8 -= 17;
-				var9 -= 357;
+				var8 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenX() : 17;
+				var9 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenY() : 357;
+			}
+			if (this.menuArea == 3) {
+				var8 -= RM_DRAW_X;
+				var9 -= RM_DRAW_Y;
 			}
 			int var10 = -1;
 			for (int var11 = 0; var11 < this.menuSize; var11++) {
@@ -4002,6 +4276,252 @@ public class Client extends GameShell {
 			if (this.menuArea == 2) {
 				this.redrawChatback = true;
 			}
+			// Consume the click so orb/minimap handlers don't also fire on the same event.
+			super.mouseClickButton = 0;
+		}
+	}
+
+	/** Handles clicks on the stat orbs (HP, prayer, run) beside the round minimap. */
+	public void handleOrbInput() {
+		if (!this.roundMinimapReady) {
+			return;
+		}
+		if (this.menuVisible && this.menuArea == 3) {
+			return;
+		}
+		int button = super.mouseClickButton;
+		if (button == 0) {
+			return;
+		}
+		if (this.isWorldmapOrbHit(super.mouseClickX, super.mouseClickY)) {
+			if (button == 1) {
+				this.openWorldMap();
+				super.mouseClickButton = 0;
+			} else if (button == 2) {
+				this.openWorldMapMenu();
+				super.mouseClickButton = 0;
+			}
+			return;
+		}
+		if (this.isXpButtonHit(super.mouseClickX, super.mouseClickY)) {
+			if (button == 1) {
+				com.gradwahl.rs254.gl.GLRenderer.xpScreenEnabled = !com.gradwahl.rs254.gl.GLRenderer.xpScreenEnabled;
+				super.mouseClickButton = 0;
+			}
+			return;
+		}
+		if (!this.isRunOrbHit(super.mouseClickX, super.mouseClickY)) {
+			return;
+		}
+		if (button == 1) {
+			this.toggleRunOrb();
+			super.mouseClickButton = 0;
+		} else if (button == 2) {
+			this.openRunOrbMenu();
+			super.mouseClickButton = 0;
+		}
+	}
+
+	private boolean isWorldmapOrbHit(int mx, int my) {
+		int cx = RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.worldmapOrbX;
+		int cy = RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.worldmapOrbY;
+		Pix32 base = com.gradwahl.rs254.gl.OsrsUi.get("worldmap_orb_base");
+		int width = base != null ? base.wi : 34;
+		int height = base != null ? base.hi : 34;
+		int x = cx - width / 2;
+		int y = cy - height / 2;
+		return mx >= x && mx < x + width && my >= y && my < y + height;
+	}
+
+	private boolean isXpButtonHit(int mx, int my) {
+		Pix32 sprite = com.gradwahl.rs254.gl.OsrsUi.get("xp_a");
+		int w = sprite != null ? sprite.wi : 27;
+		int h = sprite != null ? sprite.hi : 27;
+		int x = RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.xpButtonX;
+		int y = RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.xpButtonY;
+		return mx >= x && mx < x + w && my >= y && my < y + h;
+	}
+
+	private void openWorldMap() {
+		this.openWorldMapFullscreen();
+	}
+
+	private void openWorldMapFullscreen() {
+		if (this.glRenderer != null) {
+			this.glRenderer.openWorldMapFullscreen();
+		} else {
+			this.addChat("", 0, "World map requires OpenGL renderer.");
+		}
+	}
+
+	private void openWorldMapFloating() {
+		if (this.glRenderer != null) {
+			this.glRenderer.openWorldMapFloating();
+		} else {
+			this.addChat("", 0, "World map requires OpenGL renderer.");
+		}
+	}
+
+	private void openWorldMapMenu() {
+		this.menuOption[0] = "Cancel";
+		this.menuAction[0] = 1106;
+		this.menuOption[1] = "Fullscreen";
+		this.menuAction[1] = 9906;
+		this.menuOption[2] = "Floating";
+		this.menuAction[2] = 9907;
+		this.menuParamA[1] = 0;
+		this.menuParamB[1] = 0;
+		this.menuParamC[1] = 0;
+		this.menuParamA[2] = 0;
+		this.menuParamB[2] = 0;
+		this.menuParamC[2] = 0;
+		this.menuSize = 3;
+		int width = this.fontBold12.stringWid("Choose Option");
+		for (int i = 0; i < this.menuSize; i++) {
+			int w = this.fontBold12.stringWid(this.menuOption[i]);
+			if (w > width) {
+				width = w;
+			}
+		}
+		width += 8;
+		int height = this.menuSize * 15 + 22;
+		int localX = super.mouseClickX - RM_DRAW_X - width / 2;
+		if (localX < 0) localX = 0;
+		if (localX + width > RM_REGION_W) localX = RM_REGION_W - width;
+		int localY = super.mouseClickY - RM_DRAW_Y + 8;
+		if (localY + height > RM_REGION_H) localY = super.mouseClickY - RM_DRAW_Y - height - 8;
+		if (localY < 0) localY = 0;
+		this.menuVisible = true;
+		this.menuArea = 3;
+		this.menuX = localX;
+		this.menuY = localY;
+		this.menuWidth = width;
+		this.menuHeight = height;
+	}
+
+	private boolean isRunOrbHit(int mx, int my) {
+		int baseX = RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.orbRunX;
+		int baseY = RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.orbRunY;
+		Pix32 runBg = com.gradwahl.rs254.gl.OsrsUi.get(this.runEnabled ? "orb_gold" : "orb_grey");
+		int sphereW = runBg != null ? runBg.wi : 26;
+		int sphereH = runBg != null ? runBg.hi : 26;
+		int sphereX = baseX + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetX;
+		int sphereY = baseY + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetY;
+		if (mx >= sphereX && mx < sphereX + sphereW && my >= sphereY && my < sphereY + sphereH) {
+			return true;
+		}
+		Pix32 mount = com.gradwahl.rs254.gl.OsrsUi.get(this.runEnabled ? "orb_mount_b" : "orb_mount_a");
+		int mountW = mount != null ? mount.wi : 53;
+		int mountH = mount != null ? mount.hi : 34;
+		int mountX = baseX - 24;
+		int mountY = baseY - 3;
+		return mx >= mountX && mx < mountX + mountW && my >= mountY && my < mountY + mountH;
+	}
+
+	private void toggleRunOrb() {
+		// controls:com_4 (ID 152) = turn off run; controls:com_5 (ID 153) = turn on run
+		this.out.pIsaac(244);
+		this.out.p2(this.runEnabled ? 152 : 153);
+		this.runEnabled = !this.runEnabled; // optimistic local toggle — server confirms via varp
+	}
+
+	private void openRunOrbMenu() {
+		this.menuOption[0] = "Cancel";
+		this.menuAction[0] = 1106;
+		this.menuOption[1] = this.runEnabled ? "Toggle Walk" : "Toggle Run";
+		this.menuAction[1] = 9905;
+		this.menuParamA[1] = 0;
+		this.menuParamB[1] = 0;
+		this.menuParamC[1] = 0;
+		this.menuSize = 2;
+		int width = this.fontBold12.stringWid("Choose Option");
+		for (int i = 0; i < this.menuSize; i++) {
+			int w = this.fontBold12.stringWid(this.menuOption[i]);
+			if (w > width) {
+				width = w;
+			}
+		}
+		width += 8;
+		int height = this.menuSize * 15 + 22;
+		int localX = super.mouseClickX - RM_DRAW_X - width / 2;
+		if (localX < 0) localX = 0;
+		if (localX + width > RM_REGION_W) localX = RM_REGION_W - width;
+		int localY = super.mouseClickY - RM_DRAW_Y + 8;
+		if (localY + height > RM_REGION_H) localY = super.mouseClickY - RM_DRAW_Y - height - 8;
+		if (localY < 0) localY = 0;
+		this.menuVisible = true;
+		this.menuArea = 3;
+		this.menuX = localX;
+		this.menuY = localY;
+		this.menuWidth = width;
+		this.menuHeight = height;
+	}
+
+	/** Left-click resets the compass/camera to face north; right-click shows Face-N/E/S/W menu. */
+	public void handleCompassInput() {
+		if (!this.roundMinimapReady) {
+			return;
+		}
+		if (this.menuVisible && this.menuArea == 3) {
+			return;
+		}
+		int button = super.mouseClickButton;
+		if (button == 0) {
+			return;
+		}
+		int cx = RM_DRAW_X + (RM_CX - 97 + com.gradwahl.rs254.gl.LiveTuner.frameOffsetX + com.gradwahl.rs254.gl.LiveTuner.compassOffsetX) + 16;
+		int cy = RM_DRAW_Y + (RM_CY - 63 + com.gradwahl.rs254.gl.LiveTuner.frameOffsetY + com.gradwahl.rs254.gl.LiveTuner.compassOffsetY) + 16;
+
+		// The compass is always rendered into a 33x33 window centred on cx/cy.
+		// Use that exact area as the hitbox for both left- and right-click.
+		if (super.mouseClickX < cx - 16 || super.mouseClickX >= cx + 17 ||
+		    super.mouseClickY < cy - 16 || super.mouseClickY >= cy + 17) {
+			return;
+		}
+		if (button == 1) {
+			this.orbitCameraYaw = 0;
+			this.orbitCameraYawVelocity = 0;
+			this.orbitCameraPitch = 128;
+			this.orbitCameraPitchVelocity = 0;
+			super.mouseClickButton = 0;
+		} else if (button == 2) {
+			this.menuOption[0] = "Cancel";
+			this.menuAction[0] = 1106;
+			this.menuOption[1] = "Face-West";
+			this.menuAction[1] = 9904;
+			this.menuOption[2] = "Face-South";
+			this.menuAction[2] = 9903;
+			this.menuOption[3] = "Face-East";
+			this.menuAction[3] = 9902;
+			this.menuOption[4] = "Face-North";
+			this.menuAction[4] = 9901;
+			this.menuSize = 5;
+			int width = this.fontBold12.stringWid("Choose Option");
+			for (int i = 0; i < this.menuSize; i++) {
+				int w = this.fontBold12.stringWid(this.menuOption[i]);
+				if (w > width) {
+					width = w;
+				}
+			}
+			width += 8;
+			int height = this.menuSize * 15 + 22;
+			// Anchor to click position (not compass center) so the hover-dismiss
+			// check in handleMouseInput doesn't immediately close the menu.
+			int localClickX = super.mouseClickX - RM_DRAW_X;
+			int localClickY = super.mouseClickY - RM_DRAW_Y;
+			int mx = localClickX - width / 2;
+			if (mx < 0) mx = 0;
+			if (mx + width > RM_REGION_W) mx = RM_REGION_W - width;
+			int my = localClickY + 8;
+			if (my + height > RM_REGION_H) my = localClickY - height - 8;
+			if (my < 0) my = 0;
+			this.menuVisible = true;
+			this.menuArea = 3;
+			this.menuX = mx;
+			this.menuY = my;
+			this.menuWidth = width;
+			this.menuHeight = height;
+			super.mouseClickButton = 0;
 		}
 	}
 
@@ -4010,13 +4530,25 @@ public class Client extends GameShell {
 		if (super.mouseClickButton != 1) {
 			return;
 		}
-		int var3 = super.mouseClickX - 25 - 550;
-		int var4 = super.mouseClickY - 5 - 4;
-		if (var3 < 0 || var4 < 0 || var3 >= 146 || var4 >= 151) {
-			return;
+		int var3;
+		int var4;
+		if (this.roundMinimapReady) {
+			var3 = super.mouseClickX - (RM_DRAW_X + this.minimapImageBaseX());
+			var4 = super.mouseClickY - (RM_DRAW_Y + this.minimapImageBaseY());
+			if (var3 < 0 || var4 < 0 || var3 >= 151 || var4 >= 151) {
+				return;
+			}
+			var3 -= RM_R;
+			var4 -= 75;
+		} else {
+			var3 = super.mouseClickX - 25 - 550;
+			var4 = super.mouseClickY - 5 - 4;
+			if (var3 < 0 || var4 < 0 || var3 >= 146 || var4 >= 151) {
+				return;
+			}
+			var3 -= 73;
+			var4 -= 75;
 		}
-		var3 -= 73;
-		var4 -= 75;
 		int var5 = this.orbitCameraYaw + this.macroMinimapAngle & 0x7FF;
 		int var6 = Pix3D.sinTable[var5];
 		int var7 = Pix3D.cosTable[var5];
@@ -4047,72 +4579,87 @@ public class Client extends GameShell {
 		if (super.mouseClickButton != 1) {
 			return;
 		}
-		if (super.mouseClickX >= 539 && super.mouseClickX <= 573 && super.mouseClickY >= 169 && super.mouseClickY < 205 && this.tabInterfaceId[0] != -1) {
+		// Hitboxes are anchored to the tabrow position only — NOT the per-icon offset —
+		// so they align with the stone backgrounds in tabrow_top / tabrow_bottom.
+		// Stone left-edge X values are derived from the original 2004 redstone-sprite
+		// positions within the 249-wide top buffer and 241-wide bottom buffer.
+		// Top buffer drawn at SIDEBAR_TOP_TABS_X (516) + topTabsOffsetX.
+		// Bottom buffer drawn at SIDEBAR_BOTTOM_TABS_X (516) + bottomTabsOffsetX.
+		int topXOff = LiveTuner.topTabsOffsetX;
+		int topYOff = LiveTuner.topTabsOffsetY;
+		int botXOff = LiveTuner.bottomTabsOffsetX;
+		int botYOff = LiveTuner.bottomTabsOffsetY;
+		int[] iconX = LiveTuner.sideIconOffsetX;
+		int[] iconY = LiveTuner.sideIconOffsetY;
+		// Top row — base stone left-edges at buffer-X: 22, 54, 82, 110, 153, 181, 209 (+516 = screen)
+		if (super.mouseClickX >= 538 + topXOff + iconX[0] && super.mouseClickX < 570 + topXOff + iconX[0] && super.mouseClickY >= 168 + topYOff + iconY[0] && super.mouseClickY < 213 + topYOff + iconY[0] && this.tabInterfaceId[0] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 0;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 569 && super.mouseClickX <= 599 && super.mouseClickY >= 168 && super.mouseClickY < 205 && this.tabInterfaceId[1] != -1) {
+		if (super.mouseClickX >= 570 + topXOff + iconX[1] && super.mouseClickX < 598 + topXOff + iconX[1] && super.mouseClickY >= 168 + topYOff + iconY[1] && super.mouseClickY < 213 + topYOff + iconY[1] && this.tabInterfaceId[1] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 1;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 597 && super.mouseClickX <= 627 && super.mouseClickY >= 168 && super.mouseClickY < 205 && this.tabInterfaceId[2] != -1) {
+		if (super.mouseClickX >= 598 + topXOff + iconX[2] && super.mouseClickX < 626 + topXOff + iconX[2] && super.mouseClickY >= 168 + topYOff + iconY[2] && super.mouseClickY < 213 + topYOff + iconY[2] && this.tabInterfaceId[2] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 2;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 625 && super.mouseClickX <= 669 && super.mouseClickY >= 168 && super.mouseClickY < 203 && this.tabInterfaceId[3] != -1) {
+		if (super.mouseClickX >= 626 + topXOff + iconX[3] && super.mouseClickX < 669 + topXOff + iconX[3] && super.mouseClickY >= 168 + topYOff + iconY[3] && super.mouseClickY < 213 + topYOff + iconY[3] && this.tabInterfaceId[3] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 3;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 666 && super.mouseClickX <= 696 && super.mouseClickY >= 168 && super.mouseClickY < 205 && this.tabInterfaceId[4] != -1) {
+		if (super.mouseClickX >= 669 + topXOff + iconX[4] && super.mouseClickX < 697 + topXOff + iconX[4] && super.mouseClickY >= 168 + topYOff + iconY[4] && super.mouseClickY < 213 + topYOff + iconY[4] && this.tabInterfaceId[4] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 4;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 694 && super.mouseClickX <= 724 && super.mouseClickY >= 168 && super.mouseClickY < 205 && this.tabInterfaceId[5] != -1) {
+		if (super.mouseClickX >= 697 + topXOff + iconX[5] && super.mouseClickX < 725 + topXOff + iconX[5] && super.mouseClickY >= 168 + topYOff + iconY[5] && super.mouseClickY < 213 + topYOff + iconY[5] && this.tabInterfaceId[5] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 5;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 722 && super.mouseClickX <= 756 && super.mouseClickY >= 169 && super.mouseClickY < 205 && this.tabInterfaceId[6] != -1) {
+		if (super.mouseClickX >= 725 + topXOff + iconX[6] && super.mouseClickX < 765 + topXOff + iconX[6] && super.mouseClickY >= 168 + topYOff + iconY[6] && super.mouseClickY < 213 + topYOff + iconY[6] && this.tabInterfaceId[6] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 6;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 540 && super.mouseClickX <= 574 && super.mouseClickY >= 466 && super.mouseClickY < 502 && this.tabInterfaceId[7] != -1) {
+		// Bottom row — base stone left-edges at buffer-X: 42, 74, 102, 130, 173, 201, 229 (+516 = screen)
+		// Stone 0 (sideTab 7) has no icon; stones 1-6 (sideTabs 8-13) use icons 7-12.
+		if (super.mouseClickX >= 558 + botXOff && super.mouseClickX < 590 + botXOff && super.mouseClickY >= 466 + botYOff && super.mouseClickY < 503 + botYOff && this.tabInterfaceId[7] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 7;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 572 && super.mouseClickX <= 602 && super.mouseClickY >= 466 && super.mouseClickY < 503 && this.tabInterfaceId[8] != -1) {
+		if (super.mouseClickX >= 590 + botXOff + iconX[7] && super.mouseClickX < 618 + botXOff + iconX[7] && super.mouseClickY >= 466 + botYOff + iconY[7] && super.mouseClickY < 503 + botYOff + iconY[7] && this.tabInterfaceId[8] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 8;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 599 && super.mouseClickX <= 629 && super.mouseClickY >= 466 && super.mouseClickY < 503 && this.tabInterfaceId[9] != -1) {
+		if (super.mouseClickX >= 618 + botXOff + iconX[8] && super.mouseClickX < 646 + botXOff + iconX[8] && super.mouseClickY >= 466 + botYOff + iconY[8] && super.mouseClickY < 503 + botYOff + iconY[8] && this.tabInterfaceId[9] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 9;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 627 && super.mouseClickX <= 671 && super.mouseClickY >= 467 && super.mouseClickY < 502 && this.tabInterfaceId[10] != -1) {
+		if (super.mouseClickX >= 646 + botXOff + iconX[9] && super.mouseClickX < 689 + botXOff + iconX[9] && super.mouseClickY >= 466 + botYOff + iconY[9] && super.mouseClickY < 503 + botYOff + iconY[9] && this.tabInterfaceId[10] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 10;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 669 && super.mouseClickX <= 699 && super.mouseClickY >= 466 && super.mouseClickY < 503 && this.tabInterfaceId[11] != -1) {
+		if (super.mouseClickX >= 689 + botXOff + iconX[10] && super.mouseClickX < 717 + botXOff + iconX[10] && super.mouseClickY >= 466 + botYOff + iconY[10] && super.mouseClickY < 503 + botYOff + iconY[10] && this.tabInterfaceId[11] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 11;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 696 && super.mouseClickX <= 726 && super.mouseClickY >= 466 && super.mouseClickY < 503 && this.tabInterfaceId[12] != -1) {
+		if (super.mouseClickX >= 717 + botXOff + iconX[11] && super.mouseClickX < 745 + botXOff + iconX[11] && super.mouseClickY >= 466 + botYOff + iconY[11] && super.mouseClickY < 503 + botYOff + iconY[11] && this.tabInterfaceId[12] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 12;
 			this.redrawSideicons = true;
 		}
-		if (super.mouseClickX >= 724 && super.mouseClickX <= 758 && super.mouseClickY >= 466 && super.mouseClickY < 502 && this.tabInterfaceId[13] != -1) {
+		if (super.mouseClickX >= 745 + botXOff + iconX[12] && super.mouseClickX < 765 + botXOff + iconX[12] && super.mouseClickY >= 466 + botYOff + iconY[12] && super.mouseClickY < 503 + botYOff + iconY[12] && this.tabInterfaceId[13] != -1) {
 			this.redrawSidebar = true;
 			this.sideTab = 13;
 			this.redrawSideicons = true;
@@ -4124,7 +4671,9 @@ public class Client extends GameShell {
 		if (super.mouseClickButton != 1) {
 			return;
 		}
-		if (super.mouseClickX >= 6 && super.mouseClickX <= 106 && super.mouseClickY >= 467 && super.mouseClickY <= 499) {
+		int chatButtonXOff = LiveTuner.chatButtonBgOffsetX + LiveTuner.chatButtonOffsetX;
+		int chatButtonYOff = LiveTuner.chatButtonBgOffsetY + LiveTuner.chatButtonOffsetY;
+		if (super.mouseClickX >= 12 + chatButtonXOff && super.mouseClickX <= 68 + chatButtonXOff && super.mouseClickY >= 480 + chatButtonYOff && super.mouseClickY <= 502 + chatButtonYOff) {
 			this.chatPublicMode = (this.chatPublicMode + 1) % 4;
 			this.redrawPrivacySettings = true;
 			this.redrawChatback = true;
@@ -4134,7 +4683,7 @@ public class Client extends GameShell {
 			this.out.p1(this.chatPrivateMode);
 			this.out.p1(this.chatTradeMode);
 		}
-		if (super.mouseClickX >= 135 && super.mouseClickX <= 235 && super.mouseClickY >= 467 && super.mouseClickY <= 499) {
+		if (super.mouseClickX >= 142 + chatButtonXOff && super.mouseClickX <= 198 + chatButtonXOff && super.mouseClickY >= 480 + chatButtonYOff && super.mouseClickY <= 502 + chatButtonYOff) {
 			this.chatPrivateMode = (this.chatPrivateMode + 1) % 3;
 			this.redrawPrivacySettings = true;
 			this.redrawChatback = true;
@@ -4144,7 +4693,7 @@ public class Client extends GameShell {
 			this.out.p1(this.chatPrivateMode);
 			this.out.p1(this.chatTradeMode);
 		}
-		if (super.mouseClickX >= 273 && super.mouseClickX <= 373 && super.mouseClickY >= 467 && super.mouseClickY <= 499) {
+		if (super.mouseClickX >= 272 + chatButtonXOff && super.mouseClickX <= 328 + chatButtonXOff && super.mouseClickY >= 480 + chatButtonYOff && super.mouseClickY <= 502 + chatButtonYOff) {
 			this.chatTradeMode = (this.chatTradeMode + 1) % 3;
 			this.redrawPrivacySettings = true;
 			this.redrawChatback = true;
@@ -4154,7 +4703,7 @@ public class Client extends GameShell {
 			this.out.p1(this.chatPrivateMode);
 			this.out.p1(this.chatTradeMode);
 		}
-		if (super.mouseClickX >= 412 && super.mouseClickX <= 512 && super.mouseClickY >= 467 && super.mouseClickY <= 499) {
+		if (super.mouseClickX >= 384 + chatButtonXOff && super.mouseClickX <= 495 + chatButtonXOff && super.mouseClickY >= 480 + chatButtonYOff && super.mouseClickY <= 502 + chatButtonYOff) {
 			this.closeModal();
 			this.reportAbuseInput = "";
 			this.reportAbuseMuteOption = false;
@@ -4992,14 +5541,26 @@ public class Client extends GameShell {
 			if (arg1.spotanimFrame < 0) {
 				arg1.spotanimFrame = 0;
 			}
-			SeqType var4 = SpotAnimType.list[arg1.spotanimId].seq;
-			arg1.spotanimCycle += this.entityAnimationStep;
-			while (arg1.spotanimFrame < var4.numFrames && arg1.spotanimCycle > var4.getDuration(arg1.spotanimFrame)) {
-				arg1.spotanimCycle -= var4.getDuration(arg1.spotanimFrame);
-				arg1.spotanimFrame++;
-			}
-			if (arg1.spotanimFrame >= var4.numFrames && (arg1.spotanimFrame < 0 || arg1.spotanimFrame >= var4.numFrames)) {
+			SpotAnimType var3 = SpotAnimType.list[arg1.spotanimId];
+			SeqType var4 = var3.seq;
+			int spotanimSeqId = var3.anim;
+			if (var4 == null) {
+				ClientDebugger.onSkillcapeSpotanimEnd(arg1.spotanimId, spotanimSeqId);
 				arg1.spotanimId = -1;
+			} else {
+				arg1.spotanimCycle += this.entityAnimationStep;
+				int prevSpotanimFrame = arg1.spotanimFrame;
+				while (arg1.spotanimFrame < var4.numFrames && arg1.spotanimCycle > var4.getDuration(arg1.spotanimFrame)) {
+					arg1.spotanimCycle -= var4.getDuration(arg1.spotanimFrame);
+					arg1.spotanimFrame++;
+				}
+				if (arg1.spotanimFrame != prevSpotanimFrame) {
+					ClientDebugger.onSkillcapeSpotanimAdvance(arg1.spotanimId, spotanimSeqId, arg1.spotanimFrame, var4.numFrames, arg1.spotanimCycle);
+				}
+				if (arg1.spotanimFrame >= var4.numFrames) {
+					ClientDebugger.onSkillcapeSpotanimEnd(arg1.spotanimId, spotanimSeqId);
+					arg1.spotanimId = -1;
+				}
 			}
 		}
 		if (arg1.primarySeqId != -1 && arg1.primarySeqDelay <= 1) {
@@ -5035,7 +5596,7 @@ public class Client extends GameShell {
 
 	@Override
 	protected boolean isHighFpsEnabled() {
-		return GLRenderer.isHighFpsEffectiveEnabled();
+		return this.ingame && GLRenderer.isHighFpsEffectiveEnabled();
 	}
 
 	private void updateEntityAnimationStep() {
@@ -5143,10 +5704,79 @@ public class Client extends GameShell {
 		System.gc();
 	}
 
+	private Pix32 loadTitleMuteSprite(String resource) {
+		try {
+			java.io.InputStream is = getClass().getResourceAsStream(resource);
+			if (is == null) return null;
+			byte[] bytes = is.readAllBytes();
+			is.close();
+			return new Pix32(bytes, this);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private static void tintSprite(Pix32 sprite, int rgb) {
+		if (sprite == null) return;
+		int tr = (rgb >> 16) & 0xFF;
+		int tg = (rgb >> 8) & 0xFF;
+		int tb = rgb & 0xFF;
+		for (int i = 0; i < sprite.data.length; i++) {
+			int px = sprite.data[i];
+			int a = (px >>> 24) & 0xFF;
+			if (a == 0) continue;
+			int r = ((px >> 16) & 0xFF) * tr / 255;
+			int g = ((px >> 8) & 0xFF) * tg / 255;
+			int b = (px & 0xFF) * tb / 255;
+			sprite.data[i] = (a << 24) | (r << 16) | (g << 8) | b;
+		}
+	}
+
+	private void applyMute() {
+		this.pauseMidi();
+	}
+
+	private void applyUnmute() {
+		if (!this.resumeMidi() && !lowMem && this.midiActive && this.midiSong >= 0) {
+			this.onDemand.request(2, this.midiSong);
+		}
+	}
+
+	private static java.awt.image.BufferedImage pix32ToBufferedImage(Pix32 sprite) {
+		if (sprite == null) return null;
+		java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
+			sprite.wi, sprite.hi, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+		int[] dst = ((java.awt.image.DataBufferInt) img.getRaster().getDataBuffer()).getData();
+		System.arraycopy(sprite.data, 0, dst, 0, sprite.data.length);
+		return img;
+	}
+
+	// Convert a Pix32 (ARGB) to a PixMap whose transparent pixels (alpha=0) are
+	// stored as UI_TRANSPARENT_SENTINEL so drawTransparent() skips them, letting
+	// the title screen background show through.
+	private jagex2.graphics.PixMap pix32ToMutePixMap(Pix32 sprite) {
+		if (sprite == null) return null;
+		final int SENTINEL = com.gradwahl.rs254.gl.GLRenderer.UI_TRANSPARENT_SENTINEL;
+		jagex2.graphics.PixMap pm = new jagex2.graphics.PixMap(this.getBaseComponent(), sprite.wi, sprite.hi);
+		for (int i = 0; i < sprite.data.length; i++) {
+			int px = sprite.data[i];
+			pm.data[i] = ((px >>> 24) == 0) ? SENTINEL : (px & 0x00FFFFFF);
+		}
+		return pm;
+	}
+
 	@ObfuscatedName("client.O(I)V")
 	public void loadTitleImages() {
 		this.imageTitlebox = new Pix8(this.jagTitle, "titlebox", 0);
 		this.imageTitlebutton = new Pix8(this.jagTitle, "titlebutton", 0);
+		this.imageTitleMuteUnmuted = loadTitleMuteSprite("/osrsui/title_mute_unmuted.png");
+		tintSprite(this.imageTitleMuteUnmuted, 0xB4A08A);
+		this.bufMuteUnmuted = pix32ToBufferedImage(this.imageTitleMuteUnmuted);
+		this.mutePixMapUnmuted = pix32ToMutePixMap(this.imageTitleMuteUnmuted);
+		this.imageTitleMuteMuted = loadTitleMuteSprite("/osrsui/title_mute_muted.png");
+		tintSprite(this.imageTitleMuteMuted, 0xDD2222);
+		this.bufMuteMuted = pix32ToBufferedImage(this.imageTitleMuteMuted);
+		this.mutePixMapMuted = pix32ToMutePixMap(this.imageTitleMuteMuted);
 		this.imageRunes = new Pix8[12];
 		for (int var2 = 0; var2 < 12; var2++) {
 			this.imageRunes[var2] = new Pix8(this.jagTitle, "runes", var2);
@@ -5283,28 +5913,53 @@ public class Client extends GameShell {
 			this.imageTitle7.draw(171, 128, super.graphics);
 			this.imageTitle8.draw(171, 562, super.graphics);
 		}
+		jagex2.graphics.PixMap mutePM = this.musicMuted ? this.mutePixMapMuted : this.mutePixMapUnmuted;
+		if (mutePM != null) {
+			mutePM.drawTransparent(
+				super.canvasHeight - mutePM.height - 10,
+				super.canvasWidth - mutePM.width - 10,
+				super.graphics);
+		}
 	}
 
 	@ObfuscatedName("client.j(Z)V")
 	public void gameDraw() {
+		if (this.lastLiveTunerVersion != LiveTuner.version) {
+			this.lastLiveTunerVersion = LiveTuner.version;
+			this.redrawFrame = true;
+			this.redrawSidebar = true;
+			this.redrawChatback = true;
+			this.redrawSideicons = true;
+			this.redrawPrivacySettings = true;
+		}
 		if (this.redrawFrame) {
 			this.redrawFrame = false;
-			this.areaBackleft1.draw(4, 0, super.graphics);
-			this.areaBackleft2.draw(357, 0, super.graphics);
-			this.areaBackright1.draw(4, 722, super.graphics);
-			this.areaBackright2.draw(205, 743, super.graphics);
-			this.areaBacktop1.draw(0, 0, super.graphics);
-			this.areaBackvmid1.draw(4, 516, super.graphics);
-			this.areaBackvmid2.draw(205, 516, super.graphics);
-			this.areaBackvmid3.draw(357, 496, super.graphics);
-			this.areaBackhmid2.draw(338, 0, super.graphics);
+			boolean modernFrame = OsrsFixedGameframe.active();
+			if (modernFrame) {
+				OsrsFixedGameframe.drawBase(super.graphics, this.areaBacktop1, this.areaBackleft1, this.areaBackleft2, this.areaBackvmid1, this.areaBackright1, this.areaLeftPillarA, this.areaLeftPillarB, this.areaBackright2);
+			} else {
+				this.areaBackleft1.draw(4, 0, super.graphics);
+				this.areaBackleft2.draw(357, 0, super.graphics);
+				this.areaBackright1.draw(4, 722, super.graphics);
+				this.areaBackright2.draw(205, 727, super.graphics);
+				this.areaBacktop1.draw(0, 0, super.graphics);
+				this.areaBackvmid1.draw(4, 516, super.graphics);
+				this.areaBackvmid2.draw(205, 528, super.graphics);
+				this.areaBackvmid3.draw(357, 496, super.graphics);
+				this.areaBackhmid2.draw(338, 0, super.graphics);
+			}
 			this.redrawSidebar = true;
 			this.redrawChatback = true;
 			this.redrawSideicons = true;
 			this.redrawPrivacySettings = true;
 			if (this.sceneState != 2) {
-				this.areaViewport.draw(4, 4, super.graphics);
-				this.areaMapback.draw(4, 550, super.graphics);
+				this.areaViewport.draw(OsrsFixedGameframe.VIEWPORT_Y, OsrsFixedGameframe.VIEWPORT_X, super.graphics);
+				if (this.roundMinimapReady) {
+					this.areaMapback.draw(RM_DRAW_Y, RM_DRAW_X, super.graphics);
+					this.drawMinimapFrameOverlay();
+				} else {
+					this.areaMapback.draw(4, 550, super.graphics);
+				}
 			}
 		}
 		if (this.sceneState == 2) {
@@ -5330,16 +5985,22 @@ public class Client extends GameShell {
 			this.redrawSidebar = false;
 		}
 		if (this.chatLayerId == -1) {
-			this.chatInterface.scrollPosition = this.chatScrollHeight - this.chatScrollOffset - 77;
-			if (super.mouseX > 448 && super.mouseX < 560 && super.mouseY > 332) {
-				this.doScrollbar(463, this.chatScrollHeight, false, super.mouseX - 17, this.chatInterface, super.mouseY - 357, 77, 0);
+			boolean modernChat = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null;
+			int chatVisibleHeight = modernChat ? 116 : 77;
+			int chatScrollX = modernChat ? 497 : 463;
+			int chatDrawX = modernChat ? this.chatBoxScreenX() : 17;
+			int chatDrawY = modernChat ? this.chatBoxScreenY() : 357;
+			int chatScrollTop = modernChat ? 6 : 0;
+			this.chatInterface.scrollPosition = this.chatScrollHeight - this.chatScrollOffset - chatVisibleHeight;
+			if (super.mouseX > chatDrawX + chatScrollX - 15 && super.mouseX < chatDrawX + chatScrollX + 97 && super.mouseY > chatDrawY - 25) {
+				this.doScrollbar(chatScrollX, this.chatScrollHeight, false, super.mouseX - chatDrawX, this.chatInterface, super.mouseY - chatDrawY, chatVisibleHeight, chatScrollTop);
 			}
-			int var3 = this.chatScrollHeight - 77 - this.chatInterface.scrollPosition;
+			int var3 = this.chatScrollHeight - chatVisibleHeight - this.chatInterface.scrollPosition;
 			if (var3 < 0) {
 				var3 = 0;
 			}
-			if (var3 > this.chatScrollHeight - 77) {
-				var3 = this.chatScrollHeight - 77;
+			if (var3 > this.chatScrollHeight - chatVisibleHeight) {
+				var3 = this.chatScrollHeight - chatVisibleHeight;
 			}
 			if (this.chatScrollOffset != var3) {
 				this.chatScrollOffset = var3;
@@ -5370,7 +6031,12 @@ public class Client extends GameShell {
 		}
 		if (this.sceneState == 2) {
 			this.drawMinimap();
-			this.areaMapback.draw(4, 550, super.graphics);
+			if (this.roundMinimapReady) {
+				this.areaMapback.draw(RM_DRAW_Y, RM_DRAW_X, super.graphics);
+				this.drawMinimapFrameOverlay();
+			} else {
+				this.areaMapback.draw(4, 550, super.graphics);
+			}
 		}
 		if (this.flashingTab != -1) {
 			this.redrawSideicons = true;
@@ -5384,143 +6050,218 @@ public class Client extends GameShell {
 			}
 			this.redrawSideicons = false;
 			this.areaBackhmid1.bind();
-			this.imageBackhmid1.plotSprite(0, 0);
+			int[] iconX = com.gradwahl.rs254.gl.LiveTuner.sideIconOffsetX;
+			int[] iconY = com.gradwahl.rs254.gl.LiveTuner.sideIconOffsetY;
+			Pix32 osrsTabTop = com.gradwahl.rs254.gl.OsrsUi.get("tabrow_top"); // OSRS top tab row (swapped to correct orientation)
+			if (osrsTabTop != null) {
+				Pix2D.fillRect(45, 249, 0, 0, com.gradwahl.rs254.gl.GLRenderer.UI_TRANSPARENT_SENTINEL);
+				osrsTabTop.plotAlpha(0, 0);
+			} else {
+				this.imageBackhmid1.plotSprite(0, 0);
+			}
 			if (this.sideLayerId == -1) {
 				if (this.tabInterfaceId[this.sideTab] != -1) {
-					if (this.sideTab == 0) {
-						this.imageRedstone1.plotSprite(22, 10);
-					}
-					if (this.sideTab == 1) {
-						this.imageRedstone2.plotSprite(54, 8);
-					}
-					if (this.sideTab == 2) {
-						this.imageRedstone2.plotSprite(82, 8);
-					}
-					if (this.sideTab == 3) {
-						this.imageRedstone3.plotSprite(110, 8);
-					}
-					if (this.sideTab == 4) {
-						this.imageRedstone2h.plotSprite(153, 8);
-					}
-					if (this.sideTab == 5) {
-						this.imageRedstone2h.plotSprite(181, 8);
-					}
-					if (this.sideTab == 6) {
-						this.imageRedstone1h.plotSprite(209, 9);
+					// Per-tab stone sprites: attack=1026, middle=1030, teleports=1027.
+					// Each stone is centred in its slot and bottom-aligned in the 45-px buffer.
+					String[] topTabStones = {"tab_sel_1026","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1027"};
+					jagex2.graphics.Pix32 osrsSelTop = (this.sideTab >= 0 && this.sideTab <= 6)
+						? com.gradwahl.rs254.gl.OsrsUi.get(topTabStones[this.sideTab]) : null;
+					if (osrsSelTop != null) {
+						int slotX = Math.round((this.sideTab + 0.5f) * (249f / 7)) - osrsSelTop.wi / 2;
+						int[] tsox = LiveTuner.topStoneOffsetX;
+						int[] tsoy = LiveTuner.topStoneOffsetY;
+						osrsSelTop.plotAlpha(slotX + tsox[this.sideTab], 45 - osrsSelTop.hi + tsoy[this.sideTab]);
+					} else {
+						// 2004 fallback redstone glows.
+						int[] ico  = LiveTuner.sideIconOffsetX;
+						int[] icoy = LiveTuner.sideIconOffsetY;
+						int[] tsox = LiveTuner.topStoneOffsetX;
+						int[] tsoy = LiveTuner.topStoneOffsetY;
+						if (this.sideTab == 0) {
+							this.imageRedstone1.plotSprite(22 + ico[0] + tsox[0], 10 + icoy[0] + tsoy[0]);
+						}
+						if (this.sideTab == 1) {
+							this.imageRedstone2.plotSprite(54 + ico[1] + tsox[1], 8 + icoy[1] + tsoy[1]);
+						}
+						if (this.sideTab == 2) {
+							this.imageRedstone2.plotSprite(82 + ico[2] + tsox[2], 8 + icoy[2] + tsoy[2]);
+						}
+						if (this.sideTab == 3) {
+							this.imageRedstone3.plotSprite(110 + ico[3] + tsox[3], 8 + icoy[3] + tsoy[3]);
+						}
+						if (this.sideTab == 4) {
+							this.imageRedstone2h.plotSprite(153 + ico[4] + tsox[4], 8 + icoy[4] + tsoy[4]);
+						}
+						if (this.sideTab == 5) {
+							this.imageRedstone2h.plotSprite(181 + ico[5] + tsox[5], 8 + icoy[5] + tsoy[5]);
+						}
+						if (this.sideTab == 6) {
+							this.imageRedstone1h.plotSprite(209 + ico[6] + tsox[6], 9 + icoy[6] + tsoy[6]);
+						}
 					}
 				}
 				if (this.tabInterfaceId[0] != -1 && (this.flashingTab != 0 || loopCycle % 20 < 10)) {
-					this.imageSideicons[0].plotSprite(29, 13);
+					this.drawSideIcon(0, 29 + iconX[0], 13 + iconY[0]);
 				}
 				if (this.tabInterfaceId[1] != -1 && (this.flashingTab != 1 || loopCycle % 20 < 10)) {
-					this.imageSideicons[1].plotSprite(53, 11);
+					this.drawSideIcon(1, 53 + iconX[1], 11 + iconY[1]);
 				}
 				if (this.tabInterfaceId[2] != -1 && (this.flashingTab != 2 || loopCycle % 20 < 10)) {
-					this.imageSideicons[2].plotSprite(82, 11);
+					this.drawSideIcon(2, 82 + iconX[2], 11 + iconY[2]);
 				}
 				if (this.tabInterfaceId[3] != -1 && (this.flashingTab != 3 || loopCycle % 20 < 10)) {
-					this.imageSideicons[3].plotSprite(115, 12);
+					this.drawSideIcon(3, 115 + iconX[3], 12 + iconY[3]);
 				}
 				if (this.tabInterfaceId[4] != -1 && (this.flashingTab != 4 || loopCycle % 20 < 10)) {
-					this.imageSideicons[4].plotSprite(153, 13);
+					this.drawSideIcon(4, 153 + iconX[4], 13 + iconY[4]);
 				}
 				if (this.tabInterfaceId[5] != -1 && (this.flashingTab != 5 || loopCycle % 20 < 10)) {
-					this.imageSideicons[5].plotSprite(180, 11);
+					this.drawSideIcon(5, 180 + iconX[5], 11 + iconY[5]);
 				}
 				if (this.tabInterfaceId[6] != -1 && (this.flashingTab != 6 || loopCycle % 20 < 10)) {
-					this.imageSideicons[6].plotSprite(208, 13);
+					this.drawSideIcon(6, 208 + iconX[6], 13 + iconY[6]);
 				}
 			}
-			this.areaBackhmid1.draw(160, 516, super.graphics);
+			this.areaBackhmid1.drawTransparent(OsrsFixedGameframe.SIDEBAR_TOP_TABS_Y + LiveTuner.topTabsOffsetY,
+					OsrsFixedGameframe.SIDEBAR_TOP_TABS_X + LiveTuner.topTabsOffsetX, super.graphics);
 			this.areaBackbase2.bind();
-			this.imageBackbase2.plotSprite(0, 0);
+			Pix32 osrsTabBot = com.gradwahl.rs254.gl.OsrsUi.get("tab_1032");
+			Pix2D.fillRect(37, 269, 0, 0, 0xFF000000);
+			if (osrsTabBot != null) {
+				osrsTabBot.plotAlpha(0, 0);
+			}
 			if (this.sideLayerId == -1) {
 				if (this.tabInterfaceId[this.sideTab] != -1) {
-					if (this.sideTab == 7) {
-						this.imageRedstone1v.plotSprite(42, 0);
-					}
-					if (this.sideTab == 8) {
-						this.imageRedstone2v.plotSprite(74, 0);
-					}
-					if (this.sideTab == 9) {
-						this.imageRedstone2v.plotSprite(102, 0);
-					}
-					if (this.sideTab == 10) {
-						this.imageRedstone3v.plotSprite(130, 1);
-					}
-					if (this.sideTab == 11) {
-						this.imageRedstone2hv.plotSprite(173, 0);
-					}
-					if (this.sideTab == 12) {
-						this.imageRedstone2hv.plotSprite(201, 0);
-					}
-					if (this.sideTab == 13) {
-						this.imageRedstone1hv.plotSprite(229, 0);
+					// Per-tab stone sprites. Settings and music are swapped so the
+					// wrench uses the music glowstone and the music tab uses settings' glowstone.
+					// Each stone is centred in its slot and top-aligned in the 37-px buffer.
+					String[] botTabStones = {"tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1030","tab_sel_1029"};
+					int botIdx = this.sideTab - 7;
+					jagex2.graphics.Pix32 osrsSelBot = (botIdx >= 0 && botIdx < botTabStones.length)
+						? com.gradwahl.rs254.gl.OsrsUi.get(botTabStones[botIdx]) : null;
+					if (osrsSelBot != null) {
+						int slotX = Math.round((botIdx + 0.5f) * (241f / 7)) - osrsSelBot.wi / 2;
+						int[] bsox = LiveTuner.bottomStoneOffsetX;
+						int[] bsoy = LiveTuner.bottomStoneOffsetY;
+						osrsSelBot.plotAlpha(slotX + bsox[botIdx], bsoy[botIdx]);
+					} else {
+						// 2004 fallback redstone glows.
+						int[] ico  = LiveTuner.sideIconOffsetX;
+						int[] icoy = LiveTuner.sideIconOffsetY;
+						int[] bsox = LiveTuner.bottomStoneOffsetX;
+						int[] bsoy = LiveTuner.bottomStoneOffsetY;
+						if (this.sideTab == 7) {
+							this.imageRedstone1v.plotSprite(42 + bsox[0], 0 + bsoy[0]);
+						}
+						if (this.sideTab == 8) {
+							this.imageRedstone2v.plotSprite(74 + ico[7] + bsox[1], 0 + icoy[7] + bsoy[1]);
+						}
+						if (this.sideTab == 9) {
+							this.imageRedstone2v.plotSprite(102 + ico[8] + bsox[2], 0 + icoy[8] + bsoy[2]);
+						}
+						if (this.sideTab == 10) {
+							this.imageRedstone3v.plotSprite(130 + ico[9] + bsox[3], 1 + icoy[9] + bsoy[3]);
+						}
+						if (this.sideTab == 11) {
+							this.imageRedstone1hv.plotSprite(173 + ico[10] + bsox[4], 0 + icoy[10] + bsoy[4]);
+						}
+						if (this.sideTab == 12) {
+							this.imageRedstone2hv.plotSprite(201 + ico[11] + bsox[5], 0 + icoy[11] + bsoy[5]);
+						}
+						if (this.sideTab == 13) {
+							this.imageRedstone2hv.plotSprite(229 + ico[12] + bsox[6], 0 + icoy[12] + bsoy[6]);
+						}
 					}
 				}
 				if (this.tabInterfaceId[8] != -1 && (this.flashingTab != 8 || loopCycle % 20 < 10)) {
-					this.imageSideicons[7].plotSprite(74, 2);
+					this.drawSideIcon(7, 74 + iconX[7], 2 + iconY[7]);
 				}
 				if (this.tabInterfaceId[9] != -1 && (this.flashingTab != 9 || loopCycle % 20 < 10)) {
-					this.imageSideicons[8].plotSprite(102, 3);
+					this.drawSideIcon(8, 102 + iconX[8], 3 + iconY[8]);
 				}
 				if (this.tabInterfaceId[10] != -1 && (this.flashingTab != 10 || loopCycle % 20 < 10)) {
-					this.imageSideicons[9].plotSprite(137, 4);
+					this.drawSideIcon(9, 137 + iconX[9], 4 + iconY[9]);
 				}
 				if (this.tabInterfaceId[11] != -1 && (this.flashingTab != 11 || loopCycle % 20 < 10)) {
-					this.imageSideicons[10].plotSprite(174, 2);
+					this.drawSideIcon(10, 174 + iconX[10], 2 + iconY[10]);
 				}
 				if (this.tabInterfaceId[12] != -1 && (this.flashingTab != 12 || loopCycle % 20 < 10)) {
-					this.imageSideicons[11].plotSprite(201, 2);
+					this.drawSideIcon(11, 201 + iconX[11], 2 + iconY[11]);
 				}
 				if (this.tabInterfaceId[13] != -1 && (this.flashingTab != 13 || loopCycle % 20 < 10)) {
-					this.imageSideicons[12].plotSprite(226, 2);
+					this.drawSideIcon(12, 226 + iconX[12], 2 + iconY[12]);
 				}
 			}
-			this.areaBackbase2.draw(466, 496, super.graphics);
-			this.areaViewport.bind();
+			this.areaBackbase2.drawTransparent(OsrsFixedGameframe.SIDEBAR_BOTTOM_TABS_Y + LiveTuner.bottomTabsOffsetY,
+					OsrsFixedGameframe.SIDEBAR_BOTTOM_TABS_X + LiveTuner.bottomTabsOffsetX, super.graphics);
 		}
 		if (this.redrawPrivacySettings) {
 			this.redrawPrivacySettings = false;
 			this.areaBackbase1.bind();
-			this.imageBackbase1.plotSprite(0, 0);
-			this.fontPlain12.centreStringTag(16777215, 55, "Public chat", 28, true);
-			if (this.chatPublicMode == 0) {
-				this.fontPlain12.centreStringTag(65280, 55, "On", 41, true);
+			if (com.gradwahl.rs254.gl.OsrsUi.get("chat_tab_backing") != null) {
+				// OSRS/RuneLite bottom strip behind Public/Private/Trade/Report.
+				// Use the bundled chat sprites even when the full osrsui.jag is missing.
+				Pix32 tabBacking = com.gradwahl.rs254.gl.OsrsUi.get("chat_tab_backing");
+				// Fill the full 26px bottom-strip buffer first, then draw the OSRS strip lower.
+				// This lets the OSRS backing reach the final canvas row instead of leaving a black/white seam.
+				Pix2D.fillRect(26, 519, 0, 0, 0);
+				tabBacking.plotAlpha(0, 3); // Chatbox button background position
+				this.drawFixedChatTabs();
+			} else if (com.gradwahl.rs254.gl.OsrsUi.isLoaded()) {
+				Pix2D.fillRect(26, 519, 0, 0, 0);
+				this.drawFixedChatTabs();
+			} else {
+				this.imageBackbase1.plotSprite(0, 0);
+				this.fontPlain12.centreStringTag(16777215, 55, "Public chat", 28, true);
+				if (this.chatPublicMode == 0) {
+					this.fontPlain12.centreStringTag(65280, 55, "On", 41, true);
+				}
+				if (this.chatPublicMode == 1) {
+					this.fontPlain12.centreStringTag(16776960, 55, "Friends", 41, true);
+				}
+				if (this.chatPublicMode == 2) {
+					this.fontPlain12.centreStringTag(16711680, 55, "Off", 41, true);
+				}
+				if (this.chatPublicMode == 3) {
+					this.fontPlain12.centreStringTag(65535, 55, "Hide", 41, true);
+				}
+				this.fontPlain12.centreStringTag(16777215, 184, "Private chat", 28, true);
+				if (this.chatPrivateMode == 0) {
+					this.fontPlain12.centreStringTag(65280, 184, "On", 41, true);
+				}
+				if (this.chatPrivateMode == 1) {
+					this.fontPlain12.centreStringTag(16776960, 184, "Friends", 41, true);
+				}
+				if (this.chatPrivateMode == 2) {
+					this.fontPlain12.centreStringTag(16711680, 184, "Off", 41, true);
+				}
+				this.fontPlain12.centreStringTag(16777215, 324, "Trade/duel", 28, true);
+				if (this.chatTradeMode == 0) {
+					this.fontPlain12.centreStringTag(65280, 324, "On", 41, true);
+				}
+				if (this.chatTradeMode == 1) {
+					this.fontPlain12.centreStringTag(16776960, 324, "Friends", 41, true);
+				}
+				if (this.chatTradeMode == 2) {
+					this.fontPlain12.centreStringTag(16711680, 324, "Off", 41, true);
+				}
+				this.fontPlain12.centreStringTag(16777215, 458, LocalTime.now().format(CLOCK_FMT), 33, true);
 			}
-			if (this.chatPublicMode == 1) {
-				this.fontPlain12.centreStringTag(16776960, 55, "Friends", 41, true);
+			if (com.gradwahl.rs254.gl.OsrsUi.isLoaded()) {
+				// Blit the complete 26px OSRS strip. Do not paint a black seam over the final row.
+				this.areaBackbase1.draw(this.chatButtonBarScreenY(), this.chatButtonBarScreenX(), super.graphics);
+				// 4px black strip full canvas width at top of button bar (covers seam to right edge).
+				OsrsFixedGameframe.fillBlack(super.graphics, 0, this.chatButtonBarScreenY() + 26, OsrsFixedGameframe.CANVAS_W, 4);
+				// Let the tuned chatbox lower edge sit over the strip's black top seam.
+				// Only the overlap rows are redrawn, so the Public/Private/Trade buttons stay visible.
+				this.drawChatboxOverlapAboveBottomBar();
+			} else {
+				this.areaBackbase1.draw(453, 0, super.graphics);
 			}
-			if (this.chatPublicMode == 2) {
-				this.fontPlain12.centreStringTag(16711680, 55, "Off", 41, true);
-			}
-			if (this.chatPublicMode == 3) {
-				this.fontPlain12.centreStringTag(65535, 55, "Hide", 41, true);
-			}
-			this.fontPlain12.centreStringTag(16777215, 184, "Private chat", 28, true);
-			if (this.chatPrivateMode == 0) {
-				this.fontPlain12.centreStringTag(65280, 184, "On", 41, true);
-			}
-			if (this.chatPrivateMode == 1) {
-				this.fontPlain12.centreStringTag(16776960, 184, "Friends", 41, true);
-			}
-			if (this.chatPrivateMode == 2) {
-				this.fontPlain12.centreStringTag(16711680, 184, "Off", 41, true);
-			}
-			this.fontPlain12.centreStringTag(16777215, 324, "Trade/duel", 28, true);
-			if (this.chatTradeMode == 0) {
-				this.fontPlain12.centreStringTag(65280, 324, "On", 41, true);
-			}
-			if (this.chatTradeMode == 1) {
-				this.fontPlain12.centreStringTag(16776960, 324, "Friends", 41, true);
-			}
-			if (this.chatTradeMode == 2) {
-				this.fontPlain12.centreStringTag(16711680, 324, "Off", 41, true);
-			}
-			this.fontPlain12.centreStringTag(16777215, 458, "Report abuse", 33, true);
-			this.areaBackbase1.draw(453, 0, super.graphics);
-			this.areaViewport.bind();
 		}
+
+		// Always re-bind the viewport before 3D rendering.
+		this.areaViewport.bind();
 		this.sceneDelta = 0;
 	}
 
@@ -5591,13 +6332,21 @@ public class Client extends GameShell {
 		Model.mouseX = super.mouseX - 4;
 		Model.mouseY = super.mouseY - 4;
 		Pix2D.cls();
-		this.world.renderAll(this.cameraX, this.cameraZ, this.cameraPitch, this.cameraY, var4, this.cameraYaw);
+		if (glRenderer != null) glRenderer.beginHdFrame(this, this.world, this.minusedlevel);
+		try {
+			this.world.renderAll(this.cameraX, this.cameraZ, this.cameraPitch, this.cameraY, var4, this.cameraYaw);
+		} finally {
+			// Sample HD terrain at the player's actual level, NOT var4 (= roofCheck()'s render
+			// top-level, which flips to 3 depending on camera position and would make the HD
+			// ground use upper-floor heights -> sheet jumps into the sky).
+			if (glRenderer != null) glRenderer.setHdFrame(this, this.world, this.minusedlevel);
+		}
 		this.world.removeSprites();
 		this.entityOverlays();
 		this.coordArrow();
 		this.textureRunAnims(var12);
 		this.otherOverlays();
-		this.areaViewport.draw(4, 4, super.graphics);
+		this.areaViewport.draw(OsrsFixedGameframe.VIEWPORT_Y, OsrsFixedGameframe.VIEWPORT_X, super.graphics);
 		this.cameraX = var5;
 		this.cameraY = var6;
 		this.cameraZ = var7;
@@ -6208,6 +6957,13 @@ public class Client extends GameShell {
 
 	private void addXpDrop(int skill, int amount) {
 		GLRenderer.xpSessionGains[skill] += amount;
+		long now = System.currentTimeMillis();
+		GLRenderer.xpTrackerLastSkill      = skill;
+		GLRenderer.xpTrackerLastGainMs     = now;
+		GLRenderer.xpSkillLastGainMs[skill] = now;
+		if (GLRenderer.xpSessionStartMs == 0L) {
+			GLRenderer.xpSessionStartMs = now;
+		}
 		if (!GLRenderer.xpScreenEnabled) {
 			return;
 		}
@@ -6227,6 +6983,50 @@ public class Client extends GameShell {
 		this.xpDropStartCycle[0] = loopCycle;
 	}
 
+	private static final int XP_RIGHT              = 508;
+	// Stacked compact tracker boxes
+	private static final int XP_TRACKER_BOX_Y     = 4;
+	private static final int XP_TRACKER_BOX_W     = 148;
+	private static final int XP_TRACKER_COMPACT_H = 34;   // height of each compact skill box
+	private static final int XP_TRACKER_BOX_GAP   = 2;    // gap between stacked boxes
+	private static final int XP_TRACKER_MAX_BOXES = 4;    // cap — avoids runaway height
+	// Reserved vertical space: 4 boxes × 34px + 3 gaps × 2px = 142px
+	private static final int XP_TRACKER_RESERVED  = XP_TRACKER_MAX_BOXES * XP_TRACKER_COMPACT_H
+	                                               + (XP_TRACKER_MAX_BOXES - 1) * XP_TRACKER_BOX_GAP;
+	// Floating drops start below the reserved area and float up to just beneath it
+	private static final int XP_DROP_START_Y      = 230;
+	private static final int XP_DROP_MAX_SLIDE    = XP_DROP_START_Y - (XP_TRACKER_BOX_Y + XP_TRACKER_RESERVED + 4);
+	private static final int XP_ROW_H             = 16;  // spacing between simultaneous drops
+	private static final int XP_BAR_W          = 90;
+	private static final int XP_BAR_H          = 5;
+	private static final int XP_BAR_BG_COLOR   = 0x2D2B00;
+	private static final int XP_BAR_TEXT_GAP   = 2;
+	// Per-skill bar fill colours (indexed by skill id).
+	private static final int[] SKILL_BAR_COLORS = {
+		0xFF6060,  // 0  Attack
+		0x6060FF,  // 1  Defence
+		0x60FF60,  // 2  Strength
+		0xFFFFFF,  // 3  Hitpoints
+		0xA0FF60,  // 4  Range
+		0xFFFFAA,  // 5  Prayer
+		0x60FFFF,  // 6  Magic
+		0xFFA040,  // 7  Cooking
+		0x80FF60,  // 8  Woodcutting
+		0x60C0FF,  // 9  Fletching
+		0x4090FF,  // 10 Fishing
+		0xFF8020,  // 11 Firemaking
+		0xFFCC80,  // 12 Crafting
+		0xAAAAAA,  // 13 Smithing
+		0xCC9966,  // 14 Mining
+		0x60FFAA,  // 15 Herblore
+		0x80FFDD,  // 16 Agility
+		0xFF80CC,  // 17 Thieving
+		0x646464,  // 18 Slayer (unchanged)
+		0xDBD300,  // 19 (unused)
+		0xCCCCFF,  // 20 Runecraft
+		0xDBD300, 0xDBD300, 0xDBD300, 0xDBD300, // 21-24 unused
+	};
+
 	private void drawXpDrops() {
 		if (!GLRenderer.xpScreenEnabled) {
 			for (int i = 0; i < XP_DROP_COUNT; i++) {
@@ -6236,27 +7036,166 @@ public class Client extends GameShell {
 		}
 		this.loadCustomXpDropIcons();
 		this.loadXpDropSkillIcons();
+		this.drawXpTrackerBox();
+
 		int row = 0;
 		for (int i = 0; i < XP_DROP_COUNT; i++) {
 			int amount = this.xpDropAmount[i];
-			int age = loopCycle - this.xpDropStartCycle[i];
+			int age    = loopCycle - this.xpDropStartCycle[i];
 			if (amount <= 0 || age > XP_DROP_LIFETIME) {
 				this.xpDropAmount[i] = 0;
 				continue;
 			}
 			int skill = this.xpDropSkill[i];
-			String text = XP_DROP_SKILL_NAMES[skill] + " +" + amount;
-			Pix32 icon = this.xpDropSkillIcons[skill];
-			int iconWidth = icon == null ? 0 : icon.wi + 4;
-			int x = 508 - this.fontPlain11.stringWid(text);
-			int y = 37 + row * 18 - Math.min(age / 10, 6);
-			if (icon != null) {
-				icon.plotSprite(x - iconWidth, y - icon.hi + 2);
+			// Show just "+amount"; icon identifies the skill
+			String text      = "+" + amount;
+			Pix32  icon      = this.xpDropSkillIcons[skill];
+			int    iconWidth = (icon == null) ? 0 : icon.wi + 3;
+
+			// Float upward over full lifetime (max ~28px)
+			int slideUp = age * XP_DROP_MAX_SLIDE / XP_DROP_LIFETIME;
+
+			// Fade to grey in the last quarter of the drop's life
+			int fadeStart = XP_DROP_LIFETIME * 3 / 4;
+			int bright;
+			if (age < fadeStart) {
+				bright = 255;
+			} else {
+				bright = 255 - 255 * (age - fadeStart) / (XP_DROP_LIFETIME - fadeStart);
+				if (bright < 0) bright = 0;
 			}
-			this.fontPlain11.drawString(0, x + 1, y + 1, text);
-			this.fontPlain11.drawString(16777215, x, y, text);
+			int textColor = (bright << 16) | (bright << 8) | bright;
+
+			int textX = XP_RIGHT - this.fontPlain11.stringWid(text);
+			int textY = XP_DROP_START_Y + row * XP_ROW_H - slideUp;
+
+			if (icon != null) {
+				icon.plotSprite(textX - iconWidth, textY - icon.hi + 2);
+			}
+			// Draw with shadow only when bright enough
+			if (bright > 64) {
+				this.fontPlain11.drawString(0, textX + 1, textY + 1, text);
+			}
+			this.fontPlain11.drawString(textColor, textX, textY, text);
+
 			row++;
 		}
+	}
+
+	private void drawXpTrackerBox() {
+		// Collect skills with session gains, sorted by most recently trained
+		int[] active = new int[Stats.COUNT];
+		int count = 0;
+		for (int i = 0; i < Stats.COUNT; i++) {
+			if (GLRenderer.xpSessionGains[i] > 0) active[count++] = i;
+		}
+		if (count == 0) return;
+
+		// Insertion sort descending by last-gain timestamp
+		for (int i = 1; i < count; i++) {
+			int key = active[i];
+			int j = i - 1;
+			while (j >= 0 && GLRenderer.xpSkillLastGainMs[active[j]] < GLRenderer.xpSkillLastGainMs[key]) {
+				active[j + 1] = active[j--];
+			}
+			active[j + 1] = key;
+		}
+
+		final int bx      = XP_RIGHT - XP_TRACKER_BOX_W;
+		final int bw      = XP_TRACKER_BOX_W;
+		final int bh      = XP_TRACKER_COMPACT_H;
+		final int shown   = Math.min(count, XP_TRACKER_MAX_BOXES);
+		final long elapsed = System.currentTimeMillis() - GLRenderer.xpSessionStartMs;
+
+		int by = XP_TRACKER_BOX_Y;
+
+		for (int idx = 0; idx < shown; idx++) {
+			int skill      = active[idx];
+			int skillColor = (skill < SKILL_BAR_COLORS.length) ? SKILL_BAR_COLORS[skill] : 0x909090;
+
+			// Background + border
+			jagex2.graphics.Pix2D.fillRectTrans(by,      100, bx, bh, bw, skillColor);
+			jagex2.graphics.Pix2D.fillRectTrans(by,      150, bx,      1,  bw, skillColor); // top
+			jagex2.graphics.Pix2D.fillRectTrans(by+bh-1, 150, bx,      1,  bw, skillColor); // bottom
+			jagex2.graphics.Pix2D.fillRectTrans(by,      150, bx,      bh, 1,  skillColor); // left
+			jagex2.graphics.Pix2D.fillRectTrans(by,      150, bx+bw-1, bh, 1,  skillColor); // right
+
+			// Skill icon
+			Pix32 icon     = this.xpDropSkillIcons[skill];
+			int   textLeft = bx + (icon != null ? icon.wi + 7 : 4);
+			if (icon != null) icon.plotSprite(bx + 3, by + 4);
+
+			// Row 1: skill name (left) | "Lv N" (right)
+			final int row1Y = by + 14;
+			String skillName = XP_DROP_SKILL_NAMES[skill];
+			this.fontPlain11.drawString(0,        textLeft + 1, row1Y + 1, skillName);
+			this.fontPlain11.drawString(0xFFFFFF, textLeft,     row1Y,     skillName);
+
+			int    level = this.statBaseLevel[skill];
+			String lvStr = "Lv " + level;
+			int    lvW   = this.fontPlain11.stringWid(lvStr);
+			this.fontPlain11.drawString(0,        bx + bw - 4 - lvW + 1, row1Y + 1, lvStr);
+			this.fontPlain11.drawString(0xFFFFFF, bx + bw - 4 - lvW,     row1Y,     lvStr);
+
+			// Row 2: "+XP" (left) | "X/hr" (right, after 10s)
+			final int row2Y = by + 25;
+			long   gained  = GLRenderer.xpSessionGains[skill];
+			String gainStr = "+" + String.format("%,d", gained);
+			this.fontPlain11.drawString(0,        textLeft + 1, row2Y + 1, gainStr);
+			this.fontPlain11.drawString(0x80FF80, textLeft,     row2Y,     gainStr);
+
+			if (elapsed >= 10_000L) {
+				long   xphr  = gained * 3_600_000L / elapsed;
+				String hrStr = formatXpPerHour(xphr) + "/hr";
+				int    hrW   = this.fontPlain11.stringWid(hrStr);
+				this.fontPlain11.drawString(0,        bx + bw - 4 - hrW + 1, row2Y + 1, hrStr);
+				this.fontPlain11.drawString(0xFFFF80, bx + bw - 4 - hrW,     row2Y,     hrStr);
+			}
+
+			// Progress bar (thin, 4px)
+			if (levelExperience != null) {
+				int xp      = this.statXP[skill];
+				if (level < 1) level = 1;
+				int xpStart = (level >= 2)  ? levelExperience[level - 2] : 0;
+				int xpEnd   = (level <= 98) ? levelExperience[level - 1] : levelExperience[97];
+				int barX    = bx + 3;
+				int barY    = by + 28;
+				int barW    = bw - 6;
+				jagex2.graphics.Pix2D.fillRect(4, barW, barX, barY, XP_BAR_BG_COLOR);
+				if (xpEnd > xpStart) {
+					int fillW = (int) ((long) (xp - xpStart) * barW / (xpEnd - xpStart));
+					fillW = Math.max(0, Math.min(fillW, barW));
+					if (fillW > 0) jagex2.graphics.Pix2D.fillRect(4, fillW, barX, barY, skillColor);
+				}
+			}
+
+			by += bh + XP_TRACKER_BOX_GAP;
+		}
+	}
+
+	private static String formatXpPerHour(long xphr) {
+		if (xphr >= 1_000_000L) return String.format("%.1fM", xphr / 1_000_000.0);
+		if (xphr >= 1_000L)     return String.format("%.1fK", xphr / 1_000.0);
+		return String.valueOf(xphr);
+	}
+
+	private void drawXpBarFill(int skill, int barX, int barY) {
+		if (skill < 0 || skill >= Stats.COUNT || levelExperience == null) return;
+		int xp    = this.statXP[skill];
+		int level = this.statBaseLevel[skill];
+		if (level < 1) level = 1;
+		int color = (skill < SKILL_BAR_COLORS.length) ? SKILL_BAR_COLORS[skill] : 0xDBD300;
+		if (level >= 99) {
+			jagex2.graphics.Pix2D.fillRect(XP_BAR_H, XP_BAR_W, barX, barY, color);
+			return;
+		}
+		int xpStart = level >= 2 ? levelExperience[level - 2] : 0;
+		int xpEnd   = levelExperience[level - 1];
+		if (xpEnd <= xpStart) return;
+		int fillW = (int) ((long) (xp - xpStart) * XP_BAR_W / (xpEnd - xpStart));
+		fillW = Math.max(0, Math.min(fillW, XP_BAR_W));
+		if (fillW <= 0) return;
+		jagex2.graphics.Pix2D.fillRect(XP_BAR_H, fillW, barX, barY, color);
 	}
 
 	private void loadCustomXpDropIcons() {
@@ -6534,11 +7473,13 @@ public class Client extends GameShell {
 					var3.drawString(65535, var10, var9 - 1, "From");
 					int var11 = var10 + var3.stringWid("From ");
 					if (var8 == 1) {
-						this.imageModIcons[0].plotSprite(var11, var9 - 12);
+						jagex2.graphics.Pix32 modIcon0 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_player");
+						if (modIcon0 != null) { modIcon0.plotAlpha(var11, var9 - modIcon0.hi); } else { this.imageModIcons[0].plotSprite(var11, var9 - 12); }
 						var11 += 14;
 					}
 					if (var8 == 2) {
-						this.imageModIcons[1].plotSprite(var11, var9 - 12);
+						jagex2.graphics.Pix32 modIcon1 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_jagex");
+						if (modIcon1 != null) { modIcon1.plotAlpha(var11, var9 - modIcon1.hi); } else { this.imageModIcons[1].plotSprite(var11, var9 - 12); }
 						var11 += 14;
 					}
 					var3.drawString(0, var11, var9, var7 + ": " + this.messageText[var5]);
@@ -6623,12 +7564,16 @@ public class Client extends GameShell {
 			var8 -= 4;
 		}
 		if (this.menuArea == 1) {
-			var7 -= 553;
-			var8 -= 205;
+			var7 -= this.sidebarContentScreenX();
+			var8 -= this.sidebarContentScreenY();
 		}
 		if (this.menuArea == 2) {
-			var7 -= 17;
-			var8 -= 357;
+			var7 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenX() : 17;
+			var8 -= com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenY() : 357;
+		}
+		if (this.menuArea == 3) {
+			var7 -= RM_DRAW_X;
+			var8 -= RM_DRAW_Y;
 		}
 		for (int var10 = 0; var10 < this.menuSize; var10++) {
 			int var11 = var3 + 31 + (this.menuSize - 1 - var10) * 15;
@@ -7707,7 +8652,6 @@ public class Client extends GameShell {
 				}
 				if (var89 != this.nextMidiSong && this.midiActive && !lowMem && this.nextMusicDelay == 0) {
 					this.midiSong = var89;
-					this.midiFading = true;
 					this.onDemand.request(2, this.midiSong);
 				}
 				this.nextMidiSong = var89;
@@ -7720,7 +8664,6 @@ public class Client extends GameShell {
 				int var91 = this.in.g2();
 				if (this.midiActive && !lowMem) {
 					this.midiSong = var90;
-					this.midiFading = false;
 					this.onDemand.request(2, this.midiSong);
 					this.nextMusicDelay = var91;
 				}
@@ -7937,7 +8880,7 @@ public class Client extends GameShell {
 				this.areaViewport.bind();
 				this.fontPlain12.centreString(151, "Loading - please wait.", 257, 0);
 				this.fontPlain12.centreString(150, "Loading - please wait.", 256, 16777215);
-				this.areaViewport.draw(4, 4, super.graphics);
+				this.areaViewport.draw(OsrsFixedGameframe.VIEWPORT_Y, OsrsFixedGameframe.VIEWPORT_X, super.graphics);
 				int var126 = 0;
 				for (int var127 = (this.sceneCenterZoneX - 6) / 8; var127 <= (this.sceneCenterZoneX + 6) / 8; var127++) {
 					for (int var128 = (this.sceneCenterZoneZ - 6) / 8; var128 <= (this.sceneCenterZoneZ + 6) / 8; var128++) {
@@ -8068,6 +9011,7 @@ public class Client extends GameShell {
 				this.ptype = -1;
 				return true;
 			}
+			ClientDebugger.onProtocolError("T1", this.ptype, this.psize, this.ptype1, this.ptype2, this.describeProtocolBytes(64));
 			signlink.reporterror("T1 - " + this.ptype + "," + this.psize + " - " + this.ptype1 + "," + this.ptype2);
 			this.logout();
 		} catch (IOException var160) {
@@ -8078,6 +9022,7 @@ public class Client extends GameShell {
 			for (int var158 = 0; var158 < this.psize && var158 < 50; var158++) {
 				var157 = var157 + this.in.data[var158] + ",";
 			}
+			ClientDebugger.onProtocolError("T2", this.ptype, this.psize, this.ptype1, this.ptype2, this.describeProtocolBytes(64) + " exception=" + var161.getClass().getSimpleName() + " msg=" + var161.getMessage());
 			signlink.reporterror(var157);
 			this.logout();
 		}
@@ -8329,6 +9274,32 @@ public class Client extends GameShell {
 				}
 			}
 		}
+	}
+
+	private String describeProtocolBytes(int maxBytes) {
+		int limit = Math.min(this.psize, Math.min(maxBytes, this.in.data.length));
+		StringBuilder sb = new StringBuilder();
+		sb.append("bytes=");
+		for (int i = 0; i < limit; i++) {
+			if (i > 0) {
+				sb.append(' ');
+			}
+			int value = this.in.data[i] & 0xFF;
+			if (value < 16) {
+				sb.append('0');
+			}
+			sb.append(Integer.toHexString(value).toUpperCase());
+		}
+		sb.append(" pos=").append(this.in.pos);
+		sb.append(" sceneBase=").append(this.sceneBaseTileX).append(',').append(this.sceneBaseTileZ);
+		sb.append(" sceneCenter=").append(this.sceneCenterZoneX).append(',').append(this.sceneCenterZoneZ);
+		if (localPlayer != null) {
+			sb.append(" playerTile=")
+				.append(this.sceneBaseTileX + localPlayer.routeTileX[0])
+				.append(',')
+				.append(this.sceneBaseTileZ + localPlayer.routeTileZ[0]);
+		}
+		return sb.toString();
 	}
 
 	@ObfuscatedName("client.a(IIIBIIIIII)V")
@@ -8707,6 +9678,7 @@ public class Client extends GameShell {
 			int var12 = arg1.g1();
 			int var13 = arg1.g1();
 			arg4.addHitmark(var13, var12);
+			this.onPlayerHitmark(arg4, var13);
 			arg4.combatCycle = loopCycle + 300;
 			arg4.health = arg1.g1();
 			arg4.totalHealth = arg1.g1();
@@ -8766,6 +9738,10 @@ public class Client extends GameShell {
 			if (arg4.spotanimId == 65535) {
 				arg4.spotanimId = -1;
 			}
+			if (arg4.spotanimId != -1) {
+				SpotAnimType var26 = arg4.spotanimId < SpotAnimType.list.length ? SpotAnimType.list[arg4.spotanimId] : null;
+				ClientDebugger.onSkillcapeSpotanimReceived("player-update", arg4.spotanimId, var26 == null ? -1 : var26.anim, arg4.spotanimFrame, arg4.spotanimLastCycle, arg4.spotanimHeight);
+			}
 		}
 		if ((arg0 & 0x200) == 512) {
 			arg4.exactMoveStartSceneTileX = arg1.g1();
@@ -8783,6 +9759,7 @@ public class Client extends GameShell {
 		int var26 = arg1.g1();
 		int var27 = arg1.g1();
 		arg4.addHitmark(var27, var26);
+		this.onPlayerHitmark(arg4, var27);
 		arg4.combatCycle = loopCycle + 300;
 		arg4.health = arg1.g1();
 		arg4.totalHealth = arg1.g1();
@@ -8990,6 +9967,10 @@ public class Client extends GameShell {
 				if (var6.spotanimId == 65535) {
 					var6.spotanimId = -1;
 				}
+				if (var6.spotanimId != -1) {
+					SpotAnimType var16 = var6.spotanimId < SpotAnimType.list.length ? SpotAnimType.list[var6.spotanimId] : null;
+					ClientDebugger.onSkillcapeSpotanimReceived("npc-update", var6.spotanimId, var16 == null ? -1 : var16.anim, var6.spotanimFrame, var6.spotanimLastCycle, var6.spotanimHeight);
+				}
 			}
 			if ((var7 & 0x80) == 128) {
 				var6.targetTileX = arg2.g2();
@@ -9031,14 +10012,16 @@ public class Client extends GameShell {
 			this.menuWidth = var2;
 			this.menuHeight = this.menuSize * 15 + 22;
 		}
-		if (super.mouseClickX > 553 && super.mouseClickY > 205 && super.mouseClickX < 743 && super.mouseClickY < 466) {
-			int var8 = super.mouseClickX - 553 - var2 / 2;
+		int sideMenuX = this.sidebarContentScreenX();
+		int sideMenuY = this.sidebarContentScreenY();
+		if (super.mouseClickX > sideMenuX && super.mouseClickY > sideMenuY && super.mouseClickX < sideMenuX + 190 && super.mouseClickY < sideMenuY + 261) {
+			int var8 = super.mouseClickX - sideMenuX - var2 / 2;
 			if (var8 < 0) {
 				var8 = 0;
 			} else if (var8 + var2 > 190) {
 				var8 = 190 - var2;
 			}
-			int var9 = super.mouseClickY - 205;
+			int var9 = super.mouseClickY - sideMenuY;
 			if (var9 < 0) {
 				var9 = 0;
 			} else if (var9 + var5 > 261) {
@@ -9051,20 +10034,24 @@ public class Client extends GameShell {
 			this.menuWidth = var2;
 			this.menuHeight = this.menuSize * 15 + 22;
 		}
-		if (super.mouseClickX <= 17 || super.mouseClickY <= 357 || super.mouseClickX >= 496 || super.mouseClickY >= 453) {
+		int chatMenuX = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenX() : 17;
+		int chatMenuY = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? this.chatBoxScreenY() : 357;
+		int chatMenuW = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? 519 : 479;
+		int chatMenuH = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null ? 142 : 96;
+		if (super.mouseClickX <= chatMenuX || super.mouseClickY <= chatMenuY || super.mouseClickX >= chatMenuX + chatMenuW || super.mouseClickY >= chatMenuY + chatMenuH) {
 			return;
 		}
-		int var10 = super.mouseClickX - 17 - var2 / 2;
+		int var10 = super.mouseClickX - chatMenuX - var2 / 2;
 		if (var10 < 0) {
 			var10 = 0;
-		} else if (var10 + var2 > 479) {
-			var10 = 479 - var2;
+		} else if (var10 + var2 > chatMenuW) {
+			var10 = chatMenuW - var2;
 		}
-		int var11 = super.mouseClickY - 357;
+		int var11 = super.mouseClickY - chatMenuY;
 		if (var11 < 0) {
 			var11 = 0;
-		} else if (var11 + var5 > 96) {
-			var11 = 96 - var5;
+		} else if (var11 + var5 > chatMenuH) {
+			var11 = chatMenuH - var5;
 		}
 		this.menuVisible = true;
 		this.menuArea = 2;
@@ -9280,6 +10267,35 @@ public class Client extends GameShell {
 		int var4 = this.menuParamC[arg1];
 		int var5 = this.menuAction[arg1];
 		int var6 = this.menuParamA[arg1];
+		// Custom OSRS canvas menu actions must run before the vanilla 2000+
+		// normalization below, otherwise 9901-9907 become 7901-7907.
+		if (var5 == 9907) {
+			this.openWorldMapFloating();
+			return;
+		}
+		if (var5 == 9906) {
+			this.openWorldMapFullscreen();
+			return;
+		}
+		if (var5 == 9905) {
+			this.toggleRunOrb();
+			return;
+		}
+		if (var5 >= 9901 && var5 <= 9904) {
+			int yaw = 0;
+			if (var5 == 9902) {
+				yaw = 1536;
+			} else if (var5 == 9903) {
+				yaw = 1024;
+			} else if (var5 == 9904) {
+				yaw = 512;
+			}
+			this.orbitCameraYaw = yaw & 0x7FF;
+			this.orbitCameraYawVelocity = 0;
+			this.orbitCameraPitch = 128;
+			this.orbitCameraPitchVelocity = 0;
+			return;
+		}
 		if (var5 >= 2000) {
 			var5 -= 2000;
 		}
@@ -9899,6 +10915,13 @@ public class Client extends GameShell {
 			this.redrawSidebar = true;
 			return;
 		}
+		if (var5 == 9901) { this.orbitCameraYaw = 0; this.orbitCameraYawVelocity = 0; return; }
+		if (var5 == 9902) { this.orbitCameraYaw = 1536; this.orbitCameraYawVelocity = 0; return; }
+		if (var5 == 9903) { this.orbitCameraYaw = 1024; this.orbitCameraYawVelocity = 0; return; }
+		if (var5 == 9904) { this.orbitCameraYaw = 512; this.orbitCameraYawVelocity = 0; return; }
+		if (var5 == 9905) { this.toggleRunOrb(); return; }
+		if (var5 == 9906) { this.openWorldMapFullscreen(); return; }
+		if (var5 == 9907) { this.openWorldMapFloating(); return; }
 		this.objSelected = 0;
 		this.spellSelected = 0;
 		this.redrawSidebar = true;
@@ -10308,20 +11331,37 @@ public class Client extends GameShell {
 						var37 += var33.height2d;
 					}
 				} else if (var14.type == 5) {
-					Pix32 var45;
-					if (this.getIfActive(var14)) {
-						var45 = var14.graphic2;
+					int var45Id = arg2.children[var11];
+					if (var45Id >= 300 && var45Id <= 313 && com.gradwahl.rs254.gl.OsrsUi.isLoaded()) {
+						// Character design left/right arrows: even IDs = left, odd IDs = right
+						String arrowName = (var45Id & 1) == 0 ? "design_arrow_left" : "design_arrow_right";
+						Pix32 arrowSprite = com.gradwahl.rs254.gl.OsrsUi.get(arrowName);
+						if (arrowSprite != null) {
+							arrowSprite.plotAlpha(var15, var16);
+						} else {
+							Pix32 fallback = this.getIfActive(var14) ? var14.graphic2 : var14.graphic;
+							if (fallback != null) { fallback.plotSprite(var15, var16); }
+						}
 					} else {
-						var45 = var14.graphic;
-					}
-					if (var45 != null) {
-						var45.plotSprite(var15, var16);
+						Pix32 var45;
+						if (this.getIfActive(var14)) {
+							var45 = var14.graphic2;
+						} else {
+							var45 = var14.graphic;
+						}
+						if (var45 != null) {
+							var45.plotSprite(var15, var16);
+						}
 					}
 				} else if (var14.type == 6) {
 					int var46 = Pix3D.projectionX;
 					int var47 = Pix3D.projectionY;
+					// Clamp var16 so portrait models never render above the
+					// established clipping top (avoids portrait hanging above
+					// the chatbox stone border when childY is negative).
+					int clampedVar16 = Math.max(var16, Pix2D.boundTop);
 					Pix3D.projectionX = var15 + var14.width / 2;
-					Pix3D.projectionY = var16 + var14.height / 2;
+					Pix3D.projectionY = clampedVar16 + var14.height / 2;
 					int var48 = Pix3D.sinTable[var14.modelXAn] * var14.modelZoom >> 16;
 					int var49 = Pix3D.cosTable[var14.modelXAn] * var14.modelZoom >> 16;
 					boolean var50 = this.getIfActive(var14);
@@ -10397,6 +11437,43 @@ public class Client extends GameShell {
 		Pix2D.vline(arg5 + 17 + var8, var7 - 1, this.SCROLLBAR_GRIP_LOWLIGHT, arg3 + 14, -490);
 		Pix2D.hline(arg3, arg5 + 15 + var8 + var7, this.SCROLLBAR_GRIP_LOWLIGHT, 16);
 		Pix2D.hline(arg3 + 1, arg5 + 14 + var8 + var7, this.SCROLLBAR_GRIP_LOWLIGHT, 15);
+	}
+
+	private void drawModernChatScrollbar(int height, int scrollHeight, int x, int scrollPosition) {
+		int top = 6;
+		int bottom = height - 16;
+		int maxScrollPosition = scrollHeight - height;
+		if (maxScrollPosition < 0) {
+			maxScrollPosition = 0;
+		}
+		if (scrollPosition < 0) {
+			scrollPosition = 0;
+		}
+		if (scrollPosition > maxScrollPosition) {
+			scrollPosition = maxScrollPosition;
+		}
+		this.imageScrollbar0.plotSprite(x, top);
+		this.imageScrollbar1.plotSprite(x, bottom);
+		Pix2D.fillRect(bottom - top - 16, 16, x, top + 16, this.SCROLLBAR_TRACK);
+		int trackHeight = bottom - top - 16;
+		int grip = trackHeight * height / scrollHeight;
+		if (grip < 8) {
+			grip = 8;
+		}
+		if (grip > trackHeight) {
+			grip = trackHeight;
+		}
+		int range = trackHeight - grip;
+		int gripY = top + 16;
+		if (maxScrollPosition > 0) {
+			gripY += range * scrollPosition / maxScrollPosition;
+		}
+		Pix2D.fillRect(grip, 16, x, gripY, this.SCROLLBAR_GRIP_FOREGROUND);
+		Pix2D.vline(gripY, grip, this.SCROLLBAR_GRIP_HIGHLIGHT, x, -490);
+		Pix2D.vline(gripY, grip, this.SCROLLBAR_GRIP_HIGHLIGHT, x + 1, -490);
+		Pix2D.hline(x, gripY, this.SCROLLBAR_GRIP_HIGHLIGHT, 16);
+		Pix2D.vline(gripY, grip, this.SCROLLBAR_GRIP_LOWLIGHT, x + 15, -490);
+		Pix2D.hline(x, gripY + grip - 1, this.SCROLLBAR_GRIP_LOWLIGHT, 16);
 	}
 
 	@ObfuscatedName("client.b(BI)Ljava/lang/String;")
@@ -10903,6 +11980,11 @@ public class Client extends GameShell {
 			return;
 		}
 		int var4 = this.varps[arg1];
+		if (var3 == 7) {
+			// option_run: 0 = walk, non-zero = run
+			this.runEnabled = (var4 != 0);
+			return;
+		}
 		if (var3 == 1) {
 			if (var4 == 1) {
 				Pix3D.initColourTable(0.9D);
@@ -10944,7 +12026,6 @@ public class Client extends GameShell {
 				if (this.midiActive) {
 					if (!this.resumeMidi()) {
 						this.midiSong = this.nextMidiSong;
-						this.midiFading = false;
 						this.onDemand.request(2, this.midiSong);
 					}
 				} else {
@@ -11364,16 +12445,52 @@ public class Client extends GameShell {
 	public void drawSidebar() {
 		this.areaSidebar.bind();
 		Pix3D.scanline = this.areaSidebarOffset;
-		this.imageInvback.plotSprite(0, 0);
+		Pix32 osrsInv = com.gradwahl.rs254.gl.OsrsUi.get("sidebar_panel");
+		if (osrsInv != null) {
+			Pix2D.fillRect(261, 190, 0, 0, FRAME_STONE);
+			osrsInv.plotAlpha(0, 0);
+		} else {
+			this.imageInvback.plotSprite(0, 0);
+		}
+		int sidebarContentX = this.sidebarContentLocalX();
+		int sidebarContentY = this.sidebarContentLocalY();
 		if (this.sideLayerId != -1) {
-			this.drawLayer(0, IfType.list[this.sideLayerId], 0, 0);
+			this.drawLayer(0, IfType.list[this.sideLayerId], sidebarContentY, sidebarContentX);
 		} else if (this.tabInterfaceId[this.sideTab] != -1) {
-			this.drawLayer(0, IfType.list[this.tabInterfaceId[this.sideTab]], 0, 0);
+			this.drawLayer(0, IfType.list[this.tabInterfaceId[this.sideTab]], sidebarContentY, sidebarContentX);
 		}
 		if (this.menuVisible && this.menuArea == 1) {
 			this.drawMenu();
 		}
-		this.areaSidebar.draw(205, 553, super.graphics);
+		this.areaSidebar.draw(this.sidebarPanelScreenY(), this.sidebarPanelScreenX(), super.graphics);
+		// Re-blit left and right sidebar pillars after sidebar panel so the panel cannot cover them.
+		if (this.areaLeftPillarA != null) {
+			this.areaLeftPillarA.draw(OsrsFixedGameframe.SIDEBAR_LEFT_PILLAR_Y + LiveTuner.leftPillarAOffsetY,
+					OsrsFixedGameframe.SIDEBAR_LEFT_PILLAR_X + LiveTuner.leftPillarAOffsetX, super.graphics);
+		}
+		if (this.areaLeftPillarB != null) {
+			this.areaLeftPillarB.draw(OsrsFixedGameframe.SIDEBAR_LEFT_PILLAR_Y + LiveTuner.leftPillarBOffsetY,
+					OsrsFixedGameframe.SIDEBAR_LEFT_PILLAR_X + LiveTuner.leftPillarBOffsetX, super.graphics);
+		}
+		if (com.gradwahl.rs254.gl.OsrsUi.get("right_panel_tall_pillar") != null && this.areaBackright2 != null) {
+			this.areaBackright2.draw(OsrsFixedGameframe.SIDEBAR_RIGHT_PILLAR_Y + LiveTuner.rightPillarOffsetY,
+					OsrsFixedGameframe.SIDEBAR_RIGHT_PILLAR_X + LiveTuner.rightPillarOffsetX, super.graphics);
+		}
+		// Re-blit both tab rows on top of the sidebar panel.
+		// drawSidebar() can fire without redrawSideicons in the same frame, which
+		// leaves the sidebar panel covering the top/bottom stone rows. Blitting the
+		// pre-rendered tab-row PixMaps here (transparent-draw, so only opaque stone
+		// pixels paint) ensures the stones are always in front of the panel.
+		if (this.areaBackhmid1 != null) {
+			this.areaBackhmid1.drawTransparent(
+				OsrsFixedGameframe.SIDEBAR_TOP_TABS_Y  + LiveTuner.topTabsOffsetY,
+				OsrsFixedGameframe.SIDEBAR_TOP_TABS_X  + LiveTuner.topTabsOffsetX,  super.graphics);
+		}
+		if (this.areaBackbase2 != null) {
+			this.areaBackbase2.drawTransparent(
+				OsrsFixedGameframe.SIDEBAR_BOTTOM_TABS_Y + LiveTuner.bottomTabsOffsetY,
+				OsrsFixedGameframe.SIDEBAR_BOTTOM_TABS_X + LiveTuner.bottomTabsOffsetX, super.graphics);
+		}
 		this.areaViewport.bind();
 		Pix3D.scanline = this.areaViewportOffset;
 	}
@@ -11382,7 +12499,21 @@ public class Client extends GameShell {
 	public void drawChat() {
 		this.areaChatback.bind();
 		Pix3D.scanline = this.areaChatbackOffset;
-		this.imageChatback.plotSprite(0, 0);
+		Pix32 osrsChat = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full");
+		if (osrsChat == null) {
+			osrsChat = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_fixed");
+			if (osrsChat == null) {
+				osrsChat = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg");
+			}
+		}
+		if (osrsChat != null) {
+			Pix2D.fillRect(Pix2D.height, Pix2D.width, 0, 0, FRAME_STONE);
+			osrsChat.plotAlpha(0, 0);
+		} else if (com.gradwahl.rs254.gl.OsrsUi.isLoaded()) {
+			Pix2D.fillRect(Pix2D.height, Pix2D.width, 0, 0, 0);
+		} else {
+			this.imageChatback.plotSprite(0, 0);
+		}
 		if (this.showSocialInput) {
 			this.fontBold12.centreString(40, this.socialMessage, 239, 0);
 			this.fontBold12.centreString(60, this.socialInput + "*", 239, 128);
@@ -11393,17 +12524,41 @@ public class Client extends GameShell {
 			this.fontBold12.centreString(40, this.modalMessage, 239, 0);
 			this.fontBold12.centreString(60, "Click to continue", 239, 128);
 		} else if (this.chatLayerId != -1) {
-			this.drawLayer(0, IfType.list[this.chatLayerId], 0, 0);
+			// Dialogue interfaces are designed for the old 479x96 chatback at screen Y=357.
+			// The OSRS chatback starts at CHAT_Y=338, so shift content down to match.
+			boolean modernChatDlg = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null;
+			int chatDialogYOff = modernChatDlg
+					? (357 - com.gradwahl.rs254.gl.OsrsFixedGameframe.CHAT_Y) + com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetY : 0;
+			int chatDialogXOff = modernChatDlg ? com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetX : 0;
+			this.drawLayer(chatDialogYOff, IfType.list[this.chatLayerId], chatDialogXOff, 0);
 		} else if (this.tutLayerId != -1) {
-			this.drawLayer(0, IfType.list[this.tutLayerId], 0, 0);
+			boolean modernChatDlg = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null;
+			int chatDialogYOff = modernChatDlg
+					? (357 - com.gradwahl.rs254.gl.OsrsFixedGameframe.CHAT_Y) + com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetY : 0;
+			int chatDialogXOff = modernChatDlg ? com.gradwahl.rs254.gl.LiveTuner.chatDialogOffsetX : 0;
+			this.drawLayer(chatDialogYOff, IfType.list[this.tutLayerId], chatDialogXOff, 0);
 		} else {
 			PixFont var2 = this.fontPlain12;
+			boolean modernChat = com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null;
+			// OSRS/RuneLite fixed-mode chatbox coordinates.
+			// Keep the 519x142 full background, but draw the text in the real
+			// OSRS content area instead of using the old 2004 offsets.
+			int chatTextX = modernChat ? 10 : 4;
+			int chatClipTop = modernChat ? 14 : 0;
+			int chatClipRight = modernChat ? 496 : 463;
+			int chatClipBottom = modernChat ? 121 : 77;
+			int chatLineBase = modernChat ? 111 : 70;
+			int chatInputY = modernChat ? 133 : 90;
+			int chatDividerY = modernChat ? 119 : 77;
+			int chatScrollX = modernChat ? 497 : 463;
+			int chatVisibleLineTop = modernChat ? 23 : 0; // Top chat text limit.
+			int chatVisibleLineBottom = modernChat ? 119 : 110; // Bottom chat text limit.
 			int var3 = 0;
-			Pix2D.setClipping(463, 0, 77, 0);
+			Pix2D.setClipping(chatClipRight, chatTextX, chatClipBottom, chatClipTop);
 			for (int var4 = 0; var4 < 100; var4++) {
 				if (this.messageText[var4] != null) {
 					int var5 = this.messageType[var4];
-					int var6 = 70 - var3 * 14 + this.chatScrollOffset;
+					int var6 = chatLineBase - var3 * 14 + this.chatScrollOffset;
 					String var7 = this.messageSender[var4];
 					byte var8 = 0;
 					if (var7 != null && var7.startsWith("@cr1@")) {
@@ -11415,20 +12570,22 @@ public class Client extends GameShell {
 						var8 = 2;
 					}
 					if (var5 == 0) {
-						if (var6 > 0 && var6 < 110) {
-							var2.drawString(0, 4, var6, this.messageText[var4]);
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							var2.drawString(0, chatTextX, var6, this.messageText[var4]);
 						}
 						var3++;
 					}
 					if ((var5 == 1 || var5 == 2) && (var5 == 1 || this.chatPublicMode == 0 || this.chatPublicMode == 1 && this.isFriend(var7))) {
-						if (var6 > 0 && var6 < 110) {
-							int var9 = 4;
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							int var9 = chatTextX;
 							if (var8 == 1) {
-								this.imageModIcons[0].plotSprite(var9, var6 - 12);
+								jagex2.graphics.Pix32 modIcon0 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_player");
+								if (modIcon0 != null) { modIcon0.plotAlpha(var9, var6 - modIcon0.hi); } else { this.imageModIcons[0].plotSprite(var9, var6 - 12); }
 								var9 += 14;
 							}
 							if (var8 == 2) {
-								this.imageModIcons[1].plotSprite(var9, var6 - 12);
+								jagex2.graphics.Pix32 modIcon1 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_jagex");
+								if (modIcon1 != null) { modIcon1.plotAlpha(var9, var6 - modIcon1.hi); } else { this.imageModIcons[1].plotSprite(var9, var6 - 12); }
 								var9 += 14;
 							}
 							var2.drawString(0, var9, var6, var7 + ":");
@@ -11438,16 +12595,18 @@ public class Client extends GameShell {
 						var3++;
 					}
 					if ((var5 == 3 || var5 == 7) && this.splitPrivateChat == 0 && (var5 == 7 || this.chatPrivateMode == 0 || this.chatPrivateMode == 1 && this.isFriend(var7))) {
-						if (var6 > 0 && var6 < 110) {
-							byte var11 = 4;
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							int var11 = chatTextX;
 							var2.drawString(0, var11, var6, "From");
 							int var12 = var11 + var2.stringWid("From ");
 							if (var8 == 1) {
-								this.imageModIcons[0].plotSprite(var12, var6 - 12);
+								jagex2.graphics.Pix32 modIcon0 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_player");
+								if (modIcon0 != null) { modIcon0.plotAlpha(var12, var6 - modIcon0.hi); } else { this.imageModIcons[0].plotSprite(var12, var6 - 12); }
 								var12 += 14;
 							}
 							if (var8 == 2) {
-								this.imageModIcons[1].plotSprite(var12, var6 - 12);
+								jagex2.graphics.Pix32 modIcon1 = com.gradwahl.rs254.gl.OsrsUi.get("mod_icon_jagex");
+								if (modIcon1 != null) { modIcon1.plotAlpha(var12, var6 - modIcon1.hi); } else { this.imageModIcons[1].plotSprite(var12, var6 - 12); }
 								var12 += 14;
 							}
 							var2.drawString(0, var12, var6, var7 + ":");
@@ -11457,27 +12616,27 @@ public class Client extends GameShell {
 						var3++;
 					}
 					if (var5 == 4 && (this.chatTradeMode == 0 || this.chatTradeMode == 1 && this.isFriend(var7))) {
-						if (var6 > 0 && var6 < 110) {
-							var2.drawString(8388736, 4, var6, var7 + " " + this.messageText[var4]);
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							var2.drawString(8388736, chatTextX, var6, var7 + " " + this.messageText[var4]);
 						}
 						var3++;
 					}
 					if (var5 == 5 && this.splitPrivateChat == 0 && this.chatPrivateMode < 2) {
-						if (var6 > 0 && var6 < 110) {
-							var2.drawString(8388608, 4, var6, this.messageText[var4]);
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							var2.drawString(8388608, chatTextX, var6, this.messageText[var4]);
 						}
 						var3++;
 					}
 					if (var5 == 6 && this.splitPrivateChat == 0 && this.chatPrivateMode < 2) {
-						if (var6 > 0 && var6 < 110) {
-							var2.drawString(0, 4, var6, "To " + var7 + ":");
-							var2.drawString(8388608, var2.stringWid("To " + var7) + 12, var6, this.messageText[var4]);
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							var2.drawString(0, chatTextX, var6, "To " + var7 + ":");
+							var2.drawString(8388608, chatTextX + var2.stringWid("To " + var7) + 8, var6, this.messageText[var4]);
 						}
 						var3++;
 					}
 					if (var5 == 8 && (this.chatTradeMode == 0 || this.chatTradeMode == 1 && this.isFriend(var7))) {
-						if (var6 > 0 && var6 < 110) {
-							var2.drawString(8270336, 4, var6, var7 + " " + this.messageText[var4]);
+						if (var6 >= chatVisibleLineTop && var6 < chatVisibleLineBottom) {
+							var2.drawString(8270336, chatTextX, var6, var7 + " " + this.messageText[var4]);
 						}
 						var3++;
 					}
@@ -11485,37 +12644,89 @@ public class Client extends GameShell {
 			}
 			Pix2D.resetClipping();
 			this.chatScrollHeight = var3 * 14 + 7;
-			if (this.chatScrollHeight < 78) {
-				this.chatScrollHeight = 78;
+			if (this.chatScrollHeight < chatClipBottom + 1) {
+				this.chatScrollHeight = chatClipBottom + 1;
 			}
-			this.drawScrollbar(77, this.chatScrollHeight, 463, this.chatScrollHeight - this.chatScrollOffset - 77, 0);
+			if (modernChat) {
+				this.drawModernChatScrollbar(chatClipBottom, this.chatScrollHeight, chatScrollX, this.chatScrollHeight - this.chatScrollOffset - chatClipBottom);
+			} else {
+				this.drawScrollbar(chatClipBottom, this.chatScrollHeight, chatScrollX, this.chatScrollHeight - this.chatScrollOffset - chatClipBottom, 0);
+			}
 			String var14;
 			if (localPlayer == null || localPlayer.name == null) {
 				var14 = JString.formatDisplayName(this.loginUser);
 			} else {
 				var14 = localPlayer.name;
 			}
-			var2.drawString(0, 4, 90, var14 + ":");
-			var2.drawString(255, var2.stringWid(var14 + ": ") + 6, 90, this.chatTyped + "*");
-			Pix2D.hline(0, 77, 0, 479);
+			var2.drawString(0, chatTextX, chatInputY, var14 + ":");
+			var2.drawString(255, chatTextX + var2.stringWid(var14 + ": ") + 2, chatInputY, this.chatTyped + "*");
+			int dividerX = modernChat ? 7 : 0;
+			Pix2D.hline(dividerX, chatDividerY, 0, modernChat ? 489 : 479);
 		}
 		if (this.menuVisible && this.menuArea == 2) {
 			this.drawMenu();
 		}
-		this.areaChatback.draw(357, 17, super.graphics);
+		if (com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") != null) {
+			this.areaChatback.draw(this.chatBoxScreenY(), this.chatBoxScreenX(), super.graphics);
+		} else {
+			this.areaChatback.draw(357, 17, super.graphics);
+		}
 		this.areaViewport.bind();
 		Pix3D.scanline = this.areaViewportOffset;
+	}
+
+	/**
+	 * Re-blits only the lower overlap of the modern chatbox after the bottom
+	 * Public/Private/Trade strip draws. This lets the chat input edge be tuned
+	 * down over the small black separator without covering the button row.
+	 */
+	private void drawChatboxOverlapAboveBottomBar() {
+		if (com.gradwahl.rs254.gl.OsrsUi.get("chat_bg_full") == null || this.areaChatback == null) {
+			return;
+		}
+		int chatY = this.chatBoxScreenY();
+		int chatX = this.chatBoxScreenX();
+		int barY = this.chatButtonBarScreenY();
+		int overlap = chatY + this.areaChatback.height - barY;
+		if (overlap <= 0) {
+			return;
+		}
+		int h = Math.min(overlap, 8);
+		int srcY = this.areaChatback.height - overlap;
+		this.areaChatback.drawPartial(barY, chatX, super.graphics, srcY, 0, this.areaChatback.width, h);
 	}
 
 	@ObfuscatedName("client.h(B)V")
 	public void drawMinimap() {
 		this.areaMapback.bind();
+		if (this.roundMinimapReady) {
+			this.minimapPivotX = this.minimapPivotX();
+			this.minimapPivotY = this.minimapPivotY();
+			// RuneLite-style sandy/grey backing behind the round frame.
+			// This removes the black showing through the transparent frame edges.
+			Pix2D.fillRect(RM_REGION_H, RM_REGION_W, 0, 0, FRAME_STONE);
+			Pix32 minimapBg = com.gradwahl.rs254.gl.OsrsUi.get("right_top_strip");
+			if (minimapBg != null) {
+				int bgX = (RM_REGION_W - minimapBg.wi) / 2 + LiveTuner.rightTopBgOffsetX;
+				for (int bgY = LiveTuner.rightTopBgOffsetY; bgY < RM_REGION_H; bgY += minimapBg.hi) {
+					minimapBg.plotAlpha(bgX, bgY);
+				}
+			}
+		}
 		int var2 = this.orbitCameraYaw + this.macroMinimapAngle & 0x7FF;
 		int var3 = localPlayer.x / 32 + 48;
 		boolean var4 = false;
 		int var5 = 464 - localPlayer.z / 32;
-		this.imageMinimap.scanlineRotatePlotSprite(146, this.minimapMaskLineOffsets, this.macroMinimapZoom + 256, this.minimapMaskLineLengths, 25, var3, 151, 5, var5, var2);
-		this.imageCompass.scanlineRotatePlotSprite(33, this.compassMaskLineOffsets, 256, this.compassMaskLineLengths, 0, 25, 33, 0, 25, this.orbitCameraYaw);
+		if (this.roundMinimapReady) {
+			this.imageMinimap.scanlineRotatePlotSprite(2 * RM_R + 1, this.roundMaskLineOffsets, this.macroMinimapZoom + 256, this.roundMaskLineLengths, this.minimapImageBaseX(), var3, 151, this.minimapImageBaseY(), var5, var2);
+		} else {
+			this.imageMinimap.scanlineRotatePlotSprite(147, this.minimapMaskLineOffsets, this.macroMinimapZoom + 256, this.minimapMaskLineLengths, 25, var3, 151, 5, var5, var2);
+			this.imageCompass.scanlineRotatePlotSprite(33, this.compassMaskLineOffsets, 256, this.compassMaskLineLengths, 0, 25, 33, 0, 25, this.orbitCameraYaw);
+			// Debug marker for legacy minimap path (draw after overlays)
+			int __dbgMinimapCx2 = 25 + 147 / 2; // 25 + 73 = 98
+			int __dbgMinimapCy2 = 5 + 151 / 2;  // 5 + 75 = 80
+			Pix2D.fillRect(3, 3, __dbgMinimapCx2 - 1, __dbgMinimapCy2 - 1, 0xFF00FF);
+		}
 		for (int var6 = 0; var6 < this.activeMapFunctionCount; var6++) {
 			int var7 = this.activeMapFunctionX[var6] * 4 + 2 - localPlayer.x / 32;
 			int var8 = this.activeMapFunctionZ[var6] * 4 + 2 - localPlayer.z / 32;
@@ -11587,8 +12798,684 @@ public class Client extends GameShell {
 			int var35 = this.flagSceneTileZ * 4 + 2 - localPlayer.z / 32;
 			this.drawOnMinimap(this.imageMapmarker0, var35, var34);
 		}
-		Pix2D.fillRect(3, 3, 97, 78, 16777215);
+		if (this.roundMinimapReady) {
+			// Compass drawn into mapback; shows through the transparent socket hole
+			// in minimap_frame_fixed when it is blitted on top.
+			int ncx = (RM_CX - 97 + LiveTuner.frameOffsetX + LiveTuner.compassOffsetX) + 16;
+			int ncy = (RM_CY - 63 + LiveTuner.frameOffsetY + LiveTuner.compassOffsetY) + 16;
+			double ang = this.orbitCameraYaw * 6.283185307179586D / 2048.0D;
+			Pix32 socket = com.gradwahl.rs254.gl.OsrsUi.get("compass_socket");
+			if (socket != null) {
+				socket.plotAlpha(ncx - socket.wi / 2, ncy - socket.hi / 2);
+			}
+			Pix32 compass = com.gradwahl.rs254.gl.OsrsUi.get("compass_texture");
+			if (compass != null) {
+				// Draw into a 33x33 dest window (socket size). Corner radius ≈22.6px stays
+				// within the 25px source radius at all angles, avoiding out-of-bounds exits.
+				compass.rotatePlotSprite(ncy - 16, 33, 256, compass.wi / 2, ncx - 16, 33, ang, compass.hi / 2);
+			} else if (this.imageCompass != null) {
+				this.imageCompass.scanlineRotatePlotSprite(33, this.compassMaskLineOffsets, 256, this.compassMaskLineLengths, ncx - 16, 25, 33, ncy - 16, 25, this.orbitCameraYaw);
+			}
+		}
+		Pix2D.fillRect(3, 3, this.minimapPivotX - 1, this.minimapPivotY - 1, 16777215);
+		if (this.roundMinimapReady) {
+			// Frame and side pieces are drawn at CANVAS level after the mapback is blitted
+			// (see drawMinimapFrameOverlay). This lets them extend past the 249×172 mapback
+			// boundary and reach the true window edges without clipping.
+			this.drawMinimapOrbs();
+		}
 		this.areaViewport.bind();
+	}
+
+	/** Draws the minimap side pieces and frame directly to the full client canvas.
+	 *  This bypasses the 249x172 areaMapback clip, so the F12 tuner can push
+	 *  the pieces right to the true top/right canvas edges like RuneLite. */
+	private void drawMinimapFrameOverlay() {
+		Pix32 sideLeft = com.gradwahl.rs254.gl.OsrsUi.get("minimap_side_left");
+		Pix32 sideRight = com.gradwahl.rs254.gl.OsrsUi.get("minimap_side_right");
+		Pix32 frame = com.gradwahl.rs254.gl.OsrsUi.get("minimap_frame_fixed");
+
+		int sideLeftX = OsrsFixedGameframe.MINIMAP_SIDE_LEFT_X + LiveTuner.leftBgOffsetX;
+		int sideLeftY = OsrsFixedGameframe.MINIMAP_SIDE_LEFT_Y + LiveTuner.leftBgOffsetY;
+		int sideRightX = OsrsFixedGameframe.MINIMAP_SIDE_RIGHT_X + LiveTuner.rightBgOffsetX;
+		int sideRightY = OsrsFixedGameframe.MINIMAP_SIDE_RIGHT_Y + LiveTuner.rightBgOffsetY;
+
+		// Chrome-prime only the portion of each side piece that falls OUTSIDE the
+		// areaMapback region. Inside the mapback (x: RM_DRAW_X..+RM_REGION_W,
+		// y: RM_DRAW_Y..+RM_REGION_H) the stone fill from drawMinimap() is already
+		// present in uiBuffer, so overwriting it with chrome would create a grey gap
+		// above the minimap frame where the sprite has transparent top rows.
+		if (sideLeft != null) {
+			this.fillCanvasChromeRectOutsideMapback(sideLeftX + sideLeft.xof, sideLeftY + sideLeft.yof, sideLeft.wi, sideLeft.hi);
+		}
+		if (sideRight != null) {
+			this.fillCanvasChromeRectOutsideMapback(sideRightX + sideRight.xof, sideRightY + sideRight.yof, sideRight.wi, sideRight.hi);
+		}
+
+		this.blitToCanvas(sideLeft, sideLeftX, sideLeftY);
+		this.blitToCanvas(sideRight, sideRightX, sideRightY);
+
+		int frameX = RM_DRAW_X + RM_CX - 97 + LiveTuner.frameOffsetX;
+		int frameY = RM_DRAW_Y + RM_CY - 63 + LiveTuner.frameOffsetY;
+		this.blitToCanvas(frame, frameX, frameY);
+
+		// Redraw orbs at canvas level so the newly movable side pieces sit behind them,
+		// matching RuneLite's layering. The mapback copy remains as a safe fallback.
+		this.drawMinimapOrbsCanvasOverlay();
+
+		// The minimap/mapback is redrawn every frame, but the side-tab buffer is
+		// only rebuilt when redrawSideicons is true. When the top tabs are tuned up
+		// to meet the minimap frame, the minimap backing can otherwise cover their
+		// top edge on the next frame. Re-blit the existing top-tab buffer here so
+		// the tabs/icons always sit above the grey minimap backing.
+		this.drawTopTabsCanvasOverlay();
+
+		// XP button sits above everything in the minimap chrome — draw last so no
+		// subsequent canvas layer (tabs, frame, side pieces) can cover it.
+		// xp_a = golden (ON), xp_b = dark (OFF).
+		String xpSpriteCanvas = com.gradwahl.rs254.gl.GLRenderer.xpScreenEnabled ? "xp_b" : "xp_a";
+		Pix32 xpSprite = com.gradwahl.rs254.gl.OsrsUi.get(xpSpriteCanvas);
+		if (xpSprite != null) {
+			this.blitToCanvas(xpSprite,
+				RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.xpButtonX,
+				RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.xpButtonY);
+		}
+
+		// Minimap/compass/run-orb right-click menus need to be the very top layer.
+		if (this.menuVisible && this.menuArea == 3) {
+			this.drawCanvasMenu();
+		}
+	}
+
+	private void drawCanvasMenu() {
+		if (PixMap.uiBuffer == null || this.fontBold12 == null) {
+			return;
+		}
+		int x = RM_DRAW_X + this.menuX;
+		int y = RM_DRAW_Y + this.menuY;
+		this.fillCanvasRect(x, y, this.menuWidth, this.menuHeight, 0x005D5447);
+		this.fillCanvasRect(x + 1, y + 1, this.menuWidth - 2, 16, 0x00000000);
+		this.drawCanvasRect(x + 1, y + 18, this.menuWidth - 2, this.menuHeight - 19, 0x00000000);
+		this.drawCanvasBoldString("Choose Option", x + 3, y + 14, 0x005D5447);
+		int mouseX = super.mouseX - RM_DRAW_X;
+		int mouseY = super.mouseY - RM_DRAW_Y;
+		for (int i = 0; i < this.menuSize; i++) {
+			int rowY = this.menuY + 31 + (this.menuSize - 1 - i) * 15;
+			int color = 0xFFFFFF;
+			if (mouseX > this.menuX && mouseX < this.menuX + this.menuWidth && mouseY > rowY - 13 && mouseY < rowY + 3) {
+				color = 0xFFFF00;
+			}
+			this.drawCanvasBoldString(this.menuOption[i], x + 3, RM_DRAW_Y + rowY, color);
+		}
+	}
+
+	private void fillCanvasRect(int x, int y, int w, int h, int color) {
+		if (PixMap.uiBuffer == null || w <= 0 || h <= 0) {
+			return;
+		}
+		int left = Math.max(x, 0);
+		int top = Math.max(y, 0);
+		int right = Math.min(x + w, PixMap.uiWidth);
+		int bottom = Math.min(y + h, PixMap.uiHeight);
+		if (left >= right || top >= bottom) {
+			return;
+		}
+		int argb = 0xFF000000 | (color & 0xFFFFFF);
+		for (int row = top; row < bottom; row++) {
+			int off = row * PixMap.uiWidth + left;
+			for (int col = left; col < right; col++) {
+				PixMap.uiBuffer[off++] = argb;
+			}
+		}
+	}
+
+	private void drawCanvasRect(int x, int y, int w, int h, int color) {
+		if (w <= 0 || h <= 0) {
+			return;
+		}
+		this.fillCanvasRect(x, y, w, 1, color);
+		this.fillCanvasRect(x, y + h - 1, w, 1, color);
+		this.fillCanvasRect(x, y, 1, h, color);
+		this.fillCanvasRect(x + w - 1, y, 1, h, color);
+	}
+
+	private void drawCanvasBoldString(String text, int x, int baselineY, int color) {
+		if (text == null || this.fontBold12 == null || PixMap.uiBuffer == null) {
+			return;
+		}
+		int drawY = baselineY - this.fontBold12.height2d;
+		for (int i = 0; i < text.length(); i++) {
+			int ch = text.charAt(i);
+			if (ch == '@' && i + 4 < text.length() && text.charAt(i + 4) == '@') {
+				i += 4;
+				continue;
+			}
+			int idx = PixFont.CHAR_LOOKUP[ch & 0xFF];
+			if (idx != 94) {
+				this.plotCanvasLetter(this.fontBold12.charMask[idx],
+						x + this.fontBold12.charOffsetX[idx],
+						drawY + this.fontBold12.charOffsetY[idx],
+						this.fontBold12.charMaskWidth[idx],
+						this.fontBold12.charMaskHeight[idx], color);
+			}
+			x += this.fontBold12.charAdvance[idx];
+		}
+	}
+
+	private void drawTopTabsCanvasOverlay() {
+		if (this.areaBackhmid1 == null || com.gradwahl.rs254.gl.OsrsUi.get("tabrow_top") == null) {
+			return;
+		}
+		this.areaBackhmid1.draw(OsrsFixedGameframe.SIDEBAR_TOP_TABS_Y + LiveTuner.topTabsOffsetY,
+				OsrsFixedGameframe.SIDEBAR_TOP_TABS_X + LiveTuner.topTabsOffsetX, super.graphics);
+	}
+
+	/** Like fillCanvasChromeRect but skips any rows/columns that fall inside the
+	 *  areaMapback region — those pixels already have the correct stone fill from
+	 *  drawMinimap() and overwriting them with chrome causes a grey gap at the top
+	 *  of the minimap where side-piece sprites have transparent leading rows. */
+	private void fillCanvasChromeRectOutsideMapback(int x, int y, int w, int h) {
+		int mbX1 = RM_DRAW_X, mbY1 = RM_DRAW_Y;
+		int mbX2 = RM_DRAW_X + RM_REGION_W, mbY2 = RM_DRAW_Y + RM_REGION_H;
+		// Top strip (above mapback)
+		if (y < mbY1) {
+			fillCanvasChromeRect(x, y, w, Math.min(mbY1 - y, h));
+		}
+		// Bottom strip (below mapback)
+		int belowY = Math.max(y, mbY2);
+		if (belowY < y + h) {
+			fillCanvasChromeRect(x, belowY, w, (y + h) - belowY);
+		}
+		// Left strip (left of mapback, within vertical mapback band)
+		int bandTop = Math.max(y, mbY1), bandBot = Math.min(y + h, mbY2);
+		if (bandTop < bandBot && x < mbX1) {
+			fillCanvasChromeRect(x, bandTop, Math.min(mbX1 - x, w), bandBot - bandTop);
+		}
+		// Right strip (right of mapback, within vertical mapback band)
+		int rightX = Math.max(x, mbX2);
+		if (bandTop < bandBot && rightX < x + w) {
+			fillCanvasChromeRect(rightX, bandTop, (x + w) - rightX, bandBot - bandTop);
+		}
+	}
+
+	private void fillCanvasChromeRect(int x, int y, int w, int h) {
+		if (PixMap.uiBuffer == null) {
+			return;
+		}
+		int left = Math.max(x, 0);
+		int top = Math.max(y, 0);
+		int right = Math.min(x + w, PixMap.uiWidth);
+		int bottom = Math.min(y + h, PixMap.uiHeight);
+		if (left >= right || top >= bottom) {
+			return;
+		}
+		for (int row = top; row < bottom; row++) {
+			int off = row * PixMap.uiWidth + left;
+			for (int col = left; col < right; col++) {
+				PixMap.uiBuffer[off++] = OsrsFixedGameframe.CHROME_ARGB;
+			}
+		}
+	}
+
+	/** Draws the minimap orbs directly to the full canvas, on top of the side pieces. */
+	private void drawMinimapOrbsCanvasOverlay() {
+		int hpCur = this.statEffectiveLevel[3], hpMax = this.statBaseLevel[3];
+		int prCur = this.statEffectiveLevel[5], prMax = this.statBaseLevel[5];
+		String hpFill = this.isPoisoned() ? "orb_green" : "orb_red";
+		this.drawOrbToCanvas("orb_bg_black", hpMax > 0 ? hpFill : null, "orb_icon_hp",
+			RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.orbHpX,
+			RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.orbHpY, hpMax > 0 ? hpCur : 0, hpMax, false,
+			com.gradwahl.rs254.gl.LiveTuner.orbHpIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbHpIconOffsetY);
+		boolean prayerOn = this.isPrayerActive();
+		String prayerFill = prayerOn ? "orb_blue" : "orb_purple";
+		this.drawOrbToCanvas("orb_bg_black", prMax > 0 ? prayerFill : null, "orb_icon_prayer",
+			RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.orbPrayerX,
+			RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.orbPrayerY, prMax > 0 ? prCur : 0, prMax, prayerOn,
+			com.gradwahl.rs254.gl.LiveTuner.orbPrayerIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbPrayerIconOffsetY);
+		String runFill = this.runEnabled ? "orb_gold" : "orb_grey";
+		this.drawOrbToCanvas("orb_bg_black", runFill,
+			this.runEnabled ? "orb_icon_run_on" : "orb_icon_run_off",
+			RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.orbRunX,
+			RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.orbRunY, this.runenergy, 100, this.runEnabled,
+			com.gradwahl.rs254.gl.LiveTuner.orbRunIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbRunIconOffsetY);
+		this.drawWorldmapOrbToCanvas(RM_DRAW_X + com.gradwahl.rs254.gl.LiveTuner.worldmapOrbX, RM_DRAW_Y + com.gradwahl.rs254.gl.LiveTuner.worldmapOrbY);
+	}
+
+	private void drawWorldmapOrbToCanvas(int cx, int cy) {
+		Pix32 base = com.gradwahl.rs254.gl.OsrsUi.get("worldmap_orb_base");
+		Pix32 icon = com.gradwahl.rs254.gl.OsrsUi.get("worldmap_orb_icon");
+		if (base == null || icon == null) return;
+		this.blitToCanvas(base, cx - base.wi / 2, cy - base.hi / 2);
+		this.blitToCanvas(icon, cx - icon.wi / 2, cy - icon.hi / 2);
+	}
+
+	private void drawWorldmapOrb(int cx, int cy) {
+		Pix32 base = com.gradwahl.rs254.gl.OsrsUi.get("worldmap_orb_base");
+		Pix32 icon = com.gradwahl.rs254.gl.OsrsUi.get("worldmap_orb_icon");
+		if (base == null || icon == null) return;
+		base.plotAlpha(cx - base.wi / 2, cy - base.hi / 2);
+		icon.plotAlpha(cx - icon.wi / 2, cy - icon.hi / 2);
+	}
+
+	private void drawOrbToCanvas(String emptySphere, String fillSphere, String iconName, int x, int y, int value, int max, boolean pressed, int iconOffX, int iconOffY) {
+		Pix32 mount = com.gradwahl.rs254.gl.OsrsUi.get(pressed ? "orb_mount_b" : "orb_mount_a");
+		this.blitToCanvas(mount, x - 24, y - 3);
+		int fx = x + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetX;
+		int fy = y + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetY;
+		Pix32 empty = com.gradwahl.rs254.gl.OsrsUi.get(emptySphere);
+		if (empty != null) {
+			this.blitToCanvas(empty, fx, fy);
+		}
+		int sphereW = empty != null ? empty.wi : 26;
+		int sphereH = empty != null ? empty.hi : 26;
+		if (fillSphere != null && max > 0 && value > 0) {
+			Pix32 filled = com.gradwahl.rs254.gl.OsrsUi.get(fillSphere);
+			if (filled != null) {
+				int fillH = filled.hi * value / max;
+				if (fillH > 0) {
+					this.blitToCanvasTopCrop(filled, fx, fy, filled.hi - fillH);
+				}
+				sphereW = filled.wi;
+				sphereH = filled.hi;
+			}
+		}
+		if (iconName != null) {
+			Pix32 icon = com.gradwahl.rs254.gl.OsrsUi.get(iconName);
+			if (icon != null) {
+				this.blitToCanvas(icon,
+					fx + sphereW / 2 - icon.wi / 2 + iconOffX,
+					fy + sphereH / 2 - icon.hi / 2 + iconOffY);
+			}
+		}
+		if (mount != null) {
+			int nx = x - 24 + mount.wi / 2 + com.gradwahl.rs254.gl.LiveTuner.orbNumOffsetX;
+			int ny = y - 3 + mount.hi / 2 + 4 + com.gradwahl.rs254.gl.LiveTuner.orbNumOffsetY;
+			this.drawCanvasCentreString(ny, String.valueOf(value), nx, 0xFFFF00);
+		} else {
+			this.drawCanvasCentreString(y + sphereH / 2 + 4, String.valueOf(value), x + sphereW / 2, 0xFFFF00);
+		}
+	}
+
+	private void drawCanvasCentreString(int y, String text, int centreX, int color) {
+		if (text == null || this.fontPlain11 == null || PixMap.uiBuffer == null) {
+			return;
+		}
+		this.drawCanvasString(text, centreX - this.fontPlain11.stringWid(text) / 2, y, color);
+	}
+
+	private void drawCanvasString(String text, int x, int baselineY, int color) {
+		int drawY = baselineY - this.fontPlain11.height2d;
+		for (int i = 0; i < text.length(); i++) {
+			int ch = text.charAt(i);
+			int idx = PixFont.CHAR_LOOKUP[ch & 0xFF];
+			if (idx != 94) {
+				this.plotCanvasLetter(this.fontPlain11.charMask[idx],
+						x + this.fontPlain11.charOffsetX[idx],
+						drawY + this.fontPlain11.charOffsetY[idx],
+						this.fontPlain11.charMaskWidth[idx],
+						this.fontPlain11.charMaskHeight[idx], color);
+			}
+			x += this.fontPlain11.charAdvance[idx];
+		}
+	}
+
+	private void plotCanvasLetter(byte[] mask, int x, int y, int w, int h, int color) {
+		if (mask == null || PixMap.uiBuffer == null) {
+			return;
+		}
+		int srcX = 0;
+		int srcY = 0;
+		int cols = w;
+		int rows = h;
+		if (x < 0) { srcX = -x; cols -= srcX; x = 0; }
+		if (y < 0) { srcY = -y; rows -= srcY; y = 0; }
+		if (x + cols > PixMap.uiWidth) { cols = PixMap.uiWidth - x; }
+		if (y + rows > PixMap.uiHeight) { rows = PixMap.uiHeight - y; }
+		if (cols <= 0 || rows <= 0) {
+			return;
+		}
+		int argb = 0xFF000000 | (color & 0xFFFFFF);
+		for (int row = 0; row < rows; row++) {
+			int srcOff = (srcY + row) * w + srcX;
+			int dstOff = (y + row) * PixMap.uiWidth + x;
+			for (int col = 0; col < cols; col++) {
+				if (mask[srcOff++] != 0) {
+					PixMap.uiBuffer[dstOff] = argb;
+				}
+				dstOff++;
+			}
+		}
+	}
+
+	/** Alpha-blits a Pix32 to client-canvas coordinates instead of the current PixMap.
+	 *  PixMap.draw() forces every pixel opaque, so this method writes straight into
+	 *  the GL uiBuffer and preserves the sprite alpha while escaping mapback clipping. */
+	private void blitToCanvas(Pix32 sprite, int canvasX, int canvasY) {
+		if (sprite == null || sprite.data == null) {
+			return;
+		}
+		int x = canvasX + sprite.xof;
+		int y = canvasY + sprite.yof;
+
+		if (PixMap.uiBuffer != null) {
+			int srcX = 0;
+			int srcY = 0;
+			int cols = sprite.wi;
+			int rows = sprite.hi;
+			if (x < 0) { srcX = -x; cols -= srcX; x = 0; }
+			if (y < 0) { srcY = -y; rows -= srcY; y = 0; }
+			if (x + cols > PixMap.uiWidth) { cols = PixMap.uiWidth - x; }
+			if (y + rows > PixMap.uiHeight) { rows = PixMap.uiHeight - y; }
+			if (cols <= 0 || rows <= 0) {
+				return;
+			}
+
+			for (int row = 0; row < rows; row++) {
+				int srcOff = (srcY + row) * sprite.wi + srcX;
+				int dstOff = (y + row) * PixMap.uiWidth + x;
+				for (int col = 0; col < cols; col++) {
+					int rgba = sprite.data[srcOff++];
+					int a = rgba >>> 24;
+					if (a == 0) {
+						dstOff++;
+					} else if (a == 255) {
+						PixMap.uiBuffer[dstOff++] = rgba | 0xFF000000;
+					} else {
+						int dst = PixMap.uiBuffer[dstOff];
+						if ((dst >>> 24) == 0) {
+							dst = OsrsFixedGameframe.CHROME_ARGB; // match the RuneLite-style window/title-bar chrome
+						}
+						int ia = 255 - a;
+						int r = (((rgba >> 16 & 0xFF) * a) + ((dst >> 16 & 0xFF) * ia)) / 255;
+						int g = (((rgba >> 8 & 0xFF) * a) + ((dst >> 8 & 0xFF) * ia)) / 255;
+						int b = (((rgba & 0xFF) * a) + ((dst & 0xFF) * ia)) / 255;
+						PixMap.uiBuffer[dstOff++] = 0xFF000000 | (r << 16) | (g << 8) | b;
+					}
+				}
+			}
+			return;
+		}
+
+		if (super.graphics != null) {
+			BufferedImage img = new BufferedImage(sprite.wi, sprite.hi, BufferedImage.TYPE_INT_ARGB);
+			img.setRGB(0, 0, sprite.wi, sprite.hi, sprite.data, 0, sprite.wi);
+			super.graphics.drawImage(img, x, y, null);
+		}
+	}
+
+	/** Like {@link #blitToCanvas} but skips the top {@code topCrop} source rows so only the
+	 *  bottom portion of the sprite is drawn, positioned as if the full sprite were drawn.
+	 *  Used to render a partial fill gauge (fill from bottom proportional to value/max). */
+	private void blitToCanvasTopCrop(Pix32 sprite, int canvasX, int canvasY, int topCrop) {
+		if (sprite == null || sprite.data == null || topCrop >= sprite.hi) {
+			return;
+		}
+		if (topCrop <= 0) {
+			this.blitToCanvas(sprite, canvasX, canvasY);
+			return;
+		}
+		int x = canvasX + sprite.xof;
+		int y = canvasY + sprite.yof + topCrop;
+
+		if (PixMap.uiBuffer != null) {
+			int srcX = 0;
+			int srcY = topCrop;
+			int cols = sprite.wi;
+			int rows = sprite.hi - topCrop;
+			if (x < 0) { srcX = -x; cols -= srcX; x = 0; }
+			if (y < 0) { int adj = -y; srcY += adj; rows -= adj; y = 0; }
+			if (x + cols > PixMap.uiWidth) { cols = PixMap.uiWidth - x; }
+			if (y + rows > PixMap.uiHeight) { rows = PixMap.uiHeight - y; }
+			if (cols <= 0 || rows <= 0) {
+				return;
+			}
+			for (int row = 0; row < rows; row++) {
+				int srcOff = (srcY + row) * sprite.wi + srcX;
+				int dstOff = (y + row) * PixMap.uiWidth + x;
+				for (int col = 0; col < cols; col++) {
+					int rgba = sprite.data[srcOff++];
+					int a = rgba >>> 24;
+					if (a == 0) {
+						dstOff++;
+					} else if (a == 255) {
+						PixMap.uiBuffer[dstOff++] = rgba | 0xFF000000;
+					} else {
+						int dst = PixMap.uiBuffer[dstOff];
+						if ((dst >>> 24) == 0) {
+							dst = OsrsFixedGameframe.CHROME_ARGB;
+						}
+						int ia = 255 - a;
+						int r = (((rgba >> 16 & 0xFF) * a) + ((dst >> 16 & 0xFF) * ia)) / 255;
+						int g = (((rgba >> 8 & 0xFF) * a) + ((dst >> 8 & 0xFF) * ia)) / 255;
+						int b = (((rgba & 0xFF) * a) + ((dst & 0xFF) * ia)) / 255;
+						PixMap.uiBuffer[dstOff++] = 0xFF000000 | (r << 16) | (g << 8) | b;
+					}
+				}
+			}
+			return;
+		}
+
+		if (super.graphics != null) {
+			int rows = sprite.hi - topCrop;
+			BufferedImage img = new BufferedImage(sprite.wi, rows, BufferedImage.TYPE_INT_ARGB);
+			img.setRGB(0, 0, sprite.wi, rows, sprite.data, topCrop * sprite.wi, sprite.wi);
+			super.graphics.drawImage(img, canvasX + sprite.xof, canvasY + sprite.yof + topCrop, null);
+		}
+	}
+
+	/** Returns true if at least one prayer (prayer0–prayer14) is currently active.
+	 *  Indices 83–97 are the prayer0–prayer14 varps per varp.pack. The client's
+	 *  varp.dat does not carry debugnames (they go to varp.srv only), so we use
+	 *  hardcoded indices derived from the server's content/pack/varp.pack. */
+	private static final int PRAYER_VARP_FIRST = 83;
+	private static final int PRAYER_VARP_LAST  = 97;
+	private static final int POISON_VARP = 102;
+	private static final int POISON_HITMARK_TYPE = 2;
+
+	private boolean isPrayerActive() {
+		if (this.varps == null) {
+			return false;
+		}
+		for (int idx = PRAYER_VARP_FIRST; idx <= PRAYER_VARP_LAST; idx++) {
+			if (idx < this.varps.length && this.varps[idx] != 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean isPoisoned() {
+		// Prefer the local rev-254 signal; keep the varp as a fallback for caches/servers
+		// that happen to mirror the later OSRS poison setting.
+		return this.playerPoisoned || (this.varps != null && POISON_VARP < this.varps.length && this.varps[POISON_VARP] > 0);
+	}
+
+	private void onPlayerHitmark(ClientPlayer player, int damageType) {
+		if (player == localPlayer && damageType == POISON_HITMARK_TYPE) {
+			this.playerPoisoned = true;
+		}
+	}
+
+	private void updatePoisonStateFromSystemMessage(String message) {
+		if (message == null || message.isEmpty()) {
+			return;
+		}
+		String lower = message.toLowerCase();
+		if (!lower.contains("poison")) {
+			return;
+		}
+		if (lower.contains("poisoned") || lower.contains("poison starts")) {
+			this.playerPoisoned = true;
+			return;
+		}
+		if (lower.contains("cure") || lower.contains("cured") || lower.contains("antipoison")
+			|| lower.contains("no longer") || lower.contains("immune")) {
+			this.playerPoisoned = false;
+		}
+	}
+
+	/** Draws the OSRS stat orbs (HP, prayer, run) down the left of the round minimap. */
+	public void drawMinimapOrbs() {
+		int hpCur = this.statEffectiveLevel[3], hpMax = this.statBaseLevel[3];
+		int prCur = this.statEffectiveLevel[5], prMax = this.statBaseLevel[5];
+		String hpFill = this.isPoisoned() ? "orb_green" : "orb_red";
+		this.drawOrb("orb_bg_black", hpMax > 0 ? hpFill : null, "orb_icon_hp",
+			com.gradwahl.rs254.gl.LiveTuner.orbHpX, com.gradwahl.rs254.gl.LiveTuner.orbHpY,
+			hpMax > 0 ? hpCur : 0, hpMax, false,
+			com.gradwahl.rs254.gl.LiveTuner.orbHpIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbHpIconOffsetY);
+		boolean prayerOn = this.isPrayerActive();
+		String prayerFill2 = prayerOn ? "orb_blue" : "orb_purple";
+		this.drawOrb("orb_bg_black", prMax > 0 ? prayerFill2 : null, "orb_icon_prayer",
+			com.gradwahl.rs254.gl.LiveTuner.orbPrayerX, com.gradwahl.rs254.gl.LiveTuner.orbPrayerY,
+			prMax > 0 ? prCur : 0, prMax, prayerOn,
+			com.gradwahl.rs254.gl.LiveTuner.orbPrayerIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbPrayerIconOffsetY);
+		String runFill = this.runEnabled ? "orb_gold" : "orb_grey";
+		this.drawOrb("orb_bg_black", runFill,
+			this.runEnabled ? "orb_icon_run_on" : "orb_icon_run_off",
+			com.gradwahl.rs254.gl.LiveTuner.orbRunX, com.gradwahl.rs254.gl.LiveTuner.orbRunY,
+			this.runenergy, 100, this.runEnabled,
+			com.gradwahl.rs254.gl.LiveTuner.orbRunIconOffsetX, com.gradwahl.rs254.gl.LiveTuner.orbRunIconOffsetY);
+		String xpSpriteName = com.gradwahl.rs254.gl.GLRenderer.xpScreenEnabled ? "xp_b" : "xp_a";
+		Pix32 xpSprite = com.gradwahl.rs254.gl.OsrsUi.get(xpSpriteName);
+		if (xpSprite != null) {
+			xpSprite.plotAlpha(com.gradwahl.rs254.gl.LiveTuner.xpButtonX, com.gradwahl.rs254.gl.LiveTuner.xpButtonY);
+		}
+		this.drawWorldmapOrb(com.gradwahl.rs254.gl.LiveTuner.worldmapOrbX, com.gradwahl.rs254.gl.LiveTuner.worldmapOrbY);
+	}
+
+	/** Draws one orb: empty-sphere base, colored fill clipped from bottom, icon, value text in mount. */
+	public void drawOrb(String emptySphere, String fillSphere, String iconName, int x, int y, int value, int max, boolean pressed, int iconOffX, int iconOffY) {
+		Pix32 mount = com.gradwahl.rs254.gl.OsrsUi.get(pressed ? "orb_mount_b" : "orb_mount_a");
+		if (mount != null) {
+			mount.plotAlpha(x - 24, y - 3);
+		}
+		int fx = x + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetX;
+		int fy = y + com.gradwahl.rs254.gl.LiveTuner.orbFillOffsetY;
+		Pix32 empty = com.gradwahl.rs254.gl.OsrsUi.get(emptySphere);
+		if (empty != null) {
+			empty.plotAlpha(fx, fy);
+		}
+		int sphereW = empty != null ? empty.wi : 26;
+		int sphereH = empty != null ? empty.hi : 26;
+		if (fillSphere != null && max > 0 && value > 0) {
+			Pix32 filled = com.gradwahl.rs254.gl.OsrsUi.get(fillSphere);
+			if (filled != null) {
+				int fillH = filled.hi * value / max;
+				if (fillH > 0) {
+					int savedTop = jagex2.graphics.Pix2D.boundTop;
+					int clipY = fy + filled.hi - fillH;
+					if (clipY > savedTop) {
+						jagex2.graphics.Pix2D.boundTop = clipY;
+					}
+					filled.plotAlpha(fx, fy);
+					jagex2.graphics.Pix2D.boundTop = savedTop;
+				}
+				sphereW = filled.wi;
+				sphereH = filled.hi;
+			}
+		}
+		if (iconName != null) {
+			Pix32 icon = com.gradwahl.rs254.gl.OsrsUi.get(iconName);
+			if (icon != null) {
+				icon.plotAlpha(
+					fx + sphereW / 2 - icon.wi / 2 + iconOffX,
+					fy + sphereH / 2 - icon.hi / 2 + iconOffY);
+			}
+		}
+		String text = String.valueOf(value);
+		if (mount != null) {
+			int nx = x - 24 + mount.wi / 2 + com.gradwahl.rs254.gl.LiveTuner.orbNumOffsetX;
+			int ny = y - 3 + mount.hi / 2 + 4 + com.gradwahl.rs254.gl.LiveTuner.orbNumOffsetY;
+			this.fontPlain11.centreString(ny, text, nx, 0xFFFF00);
+		} else {
+			this.fontPlain11.centreString(y + sphereH / 2 + 4, text, x + sphereW / 2, 0xFFFF00);
+		}
+	}
+
+	/** Draws one OSRS-style chat channel pill centred at centreX of the bottom bar.
+	 *  Pill colour reflects the chat mode (0=On grey, 1=Friends blue, 2/3=Off red);
+	 *  mode -1 (Report) is always grey. Positions match the legacy click regions. */
+	public void drawChatTab(int centreX, String label, int mode) {
+		String sprite = "chat_tab_grey";
+		if (mode == 1) {
+			sprite = "chat_tab_blue";
+		} else if (mode == 2 || mode == 3) {
+			sprite = "chat_tab_red";
+		}
+		Pix32 pill = com.gradwahl.rs254.gl.OsrsUi.get(sprite);
+		int y = 15;
+		if (pill != null) {
+			pill.plotAlpha(centreX - pill.wi / 2, y);
+		}
+		this.fontPlain11.centreString(y + 13, label, centreX - 14, 0xFFFFFF);
+	}
+
+	/**
+	 * Draws one sidebar tab icon. Prefers the OSRS PNG (tab_icon_{idx}) loaded via
+	 * OsrsUi; falls back to the 2004 imageSideicons[idx] sprite if not available.
+	 */
+	private void drawSideIcon(int idx, int x, int y) {
+		jagex2.graphics.Pix32 osrs = com.gradwahl.rs254.gl.OsrsUi.get("tab_icon_" + idx);
+		if (osrs != null) {
+			osrs.plotAlpha(x, y);
+		} else {
+			this.imageSideicons[idx].plotSprite(x, y);
+		}
+	}
+
+	/** Draws the fixed-gameframe chat tab strip used by the 2007-style layout. */
+	public void drawFixedChatTabs() {
+		int xOff = LiveTuner.chatButtonOffsetX;
+		this.drawFixedChatTab(12 + xOff, "Public", this.fixedChatModeLabel(this.chatPublicMode), this.chatPublicMode);
+		this.drawFixedChatTab(142 + xOff, "Private", this.fixedChatModeLabel(this.chatPrivateMode), this.chatPrivateMode);
+		this.drawFixedChatTab(272 + xOff, "Trade", this.fixedChatModeLabel(this.chatTradeMode), this.chatTradeMode);
+		this.drawFixedReportTab(384 + xOff);
+	}
+
+	private void drawFixedChatTab(int x, String label, String status, int mode) {
+		Pix32 tab = com.gradwahl.rs254.gl.OsrsUi.get(mode == 1 ? "chat_tab_small_blue" : "chat_tab_small");
+		int y = (tab != null ? 4 : 27) + LiveTuner.chatButtonOffsetY; // move Public/Private/Trade/Report buttons
+		if (tab != null) {
+			tab.plotAlpha(x, y);
+		}
+		this.fontPlain11.centreString(y + 9, label, x + 28, 0xFFFFFF);
+		if (status != null) {
+			this.fontPlain11.centreString(y + 20, status, x + 28, this.fixedChatModeColour(mode));
+		}
+	}
+
+	private static final DateTimeFormatter CLOCK_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+	private void drawFixedReportTab(int x) {
+		Pix32 tab = com.gradwahl.rs254.gl.OsrsUi.get("chat_tab_report");
+		int y = (tab != null ? 4 : 27) + LiveTuner.chatButtonOffsetY;
+		if (tab != null) {
+			tab.plotAlpha(x, y);
+		}
+		this.fontPlain11.centreString(y + 13, LocalTime.now().format(CLOCK_FMT), x + 55, 0xFFFFFF);
+	}
+
+	private String fixedChatModeLabel(int mode) {
+		if (mode == 1) {
+			return "Friends";
+		}
+		if (mode == 2) {
+			return "Off";
+		}
+		if (mode == 3) {
+			return "Hide";
+		}
+		return "On";
+	}
+
+	private int fixedChatModeColour(int mode) {
+		if (mode == 1) {
+			return 0xFFFF00;
+		}
+		if (mode == 2 || mode == 3) {
+			return 0xFF0000;
+		}
+		return 0x00FF00;
 	}
 
 	@ObfuscatedName("client.b(Ljb;III)V")
@@ -11608,7 +13495,7 @@ public class Client extends GameShell {
 		double var14 = Math.atan2((double) var12, (double) var13);
 		int var16 = (int) (Math.sin(var14) * 63.0D);
 		int var17 = (int) (Math.cos(var14) * 57.0D);
-		this.imageMapedge.rotatePlotSprite(83 - var17 - 20, 20, 256, 15, var16 + 94 + 4 - 10, 20, var14, 15);
+		this.imageMapedge.rotatePlotSprite(this.minimapPivotY + 4 - var17 - 20, 20, 256, 15, var16 + this.minimapPivotX - 10, 20, var14, 15);
 	}
 
 	@ObfuscatedName("client.a(Ljb;III)V")
@@ -11624,10 +13511,10 @@ public class Client extends GameShell {
 		int var10 = var8 * 256 / (this.macroMinimapZoom + 256);
 		int var11 = arg2 * var9 + arg3 * var10 >> 16;
 		int var12 = arg2 * var10 - arg3 * var9 >> 16;
-		if (var6 > 2500) {
-			arg0.scanlinePlotSprite(this.imageMapback, 83 - var12 - arg0.ohi / 2 - 4, var11 + 94 - arg0.owi / 2 + 4);
+		if (var6 > 2500 && !this.roundMinimapReady) {
+			arg0.scanlinePlotSprite(this.imageMapback, this.minimapPivotY - var12 - arg0.ohi / 2, var11 + this.minimapPivotX - arg0.owi / 2);
 		} else {
-			arg0.plotSprite(var11 + 94 - arg0.owi / 2 + 4, 83 - var12 - arg0.ohi / 2 - 4);
+			arg0.plotSprite(var11 + this.minimapPivotX - arg0.owi / 2, this.minimapPivotY - var12 - arg0.ohi / 2);
 		}
 	}
 
@@ -11636,6 +13523,9 @@ public class Client extends GameShell {
 		if (arg1 == 0 && this.tutLayerId != -1) {
 			this.modalMessage = arg3;
 			super.mouseClickButton = 0;
+		}
+		if (arg1 == 0 && (arg0 == null || arg0.isEmpty())) {
+			this.updatePoisonStateFromSystemMessage(arg3);
 		}
 		if (this.chatLayerId == -1) {
 			this.redrawChatback = true;

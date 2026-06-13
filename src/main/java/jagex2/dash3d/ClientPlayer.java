@@ -1,5 +1,7 @@
 package jagex2.dash3d;
 
+import com.gradwahl.rs254.ClientDebugger;
+import com.gradwahl.rs254.overlay.SkillcapeOverlay;
 import deob.ObfuscatedName;
 import jagex2.client.Client;
 import jagex2.config.*;
@@ -174,11 +176,50 @@ public class ClientPlayer extends ClientEntity {
 		if (super.spotanimId != -1 && super.spotanimFrame != -1) {
 			SpotAnimType var3 = SpotAnimType.list[super.spotanimId];
 			Model var4 = var3.getTempModel();
+			int seqId = var3.anim;
+			int animFrameId = var3.seq != null && super.spotanimFrame >= 0 && super.spotanimFrame < var3.seq.frames.length ? var3.seq.frames[super.spotanimFrame] : -1;
+			ClientDebugger.onSkillcapeRender("player", super.spotanimId, seqId, super.spotanimFrame, animFrameId, var4 != null);
+			if (super.spotanimId == 832 || super.spotanimId == 824) {
+				System.out.println("[SC-DEBUG] spotanim=" + super.spotanimId + " frame=" + super.spotanimFrame
+					+ " model=" + (var4 != null ? "ok(vc=" + var4.vertexCount + ",fc=" + var4.faceCount + ")" : "NULL")
+					+ " animFrameId=" + animFrameId
+					+ " seqFrames=" + (var3.seq != null ? var3.seq.numFrames : -1));
+			}
 			if (var4 != null) {
 				Model var5 = new Model(AnimFrame.shareAlpha(super.spotanimFrame), false, true, var4);
 				var5.translate(0, 0, -super.spotanimHeight);
 				var5.prepareAnim();
+				ClientDebugger.dumpStrengthSpotanimRig("spotanim-base", var5);
+				ClientDebugger.dumpStrengthSpotanimFrame("player", seqId, animFrameId);
 				var5.animate(var3.seq.frames[super.spotanimFrame]);
+				if (super.spotanimId == 832 || super.spotanimId == 824) {
+					if (super.spotanimFrame <= 1) {
+						int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+						for (int i = 0; i < var5.vertexCount; i++) {
+							if (var5.vertexY[i] < minY) minY = var5.vertexY[i];
+							if (var5.vertexY[i] > maxY) maxY = var5.vertexY[i];
+						}
+						System.out.println("[SC-DEBUG] after-anim: spotanim=" + super.spotanimId + " frame=" + super.spotanimFrame
+							+ " vertexY=[" + minY + "," + maxY + "] labelVertices=" + (var5.labelVertices != null ? var5.labelVertices.length : "null"));
+					}
+				}
+				if (ClientDebugger.isEnabled()) {
+					int movedVertices = 0;
+					int maxDelta = 0;
+					for (int i = 0; i < var5.vertexCount; i++) {
+						int dx = Math.abs(var5.vertexX[i] - var4.vertexX[i]);
+						int dy = Math.abs(var5.vertexY[i] - (var4.vertexY[i] - super.spotanimHeight));
+						int dz = Math.abs(var5.vertexZ[i] - var4.vertexZ[i]);
+						int delta = dx + dy + dz;
+						if (delta > 0) {
+							movedVertices++;
+							if (delta > maxDelta) {
+								maxDelta = delta;
+							}
+						}
+					}
+					ClientDebugger.onSkillcapeSpotanimDelta("player", super.spotanimFrame, movedVertices, maxDelta);
+				}
 				var5.labelFaces = null;
 				var5.labelVertices = null;
 				if (var3.resizeh != 128 || var3.resizev != 128) {
@@ -257,6 +298,7 @@ public class ClientPlayer extends ClientEntity {
 		if (super.primarySeqId >= 0 && super.primarySeqDelay == 0) {
 			SeqType var10 = SeqType.list[super.primarySeqId];
 			var6 = var10.frames[super.primarySeqFrame];
+			ClientDebugger.onSkillcapeBodyRender("player-model", super.primarySeqId, super.primarySeqFrame, var6, super.primarySeqDelay);
 			interpT = this.seqInterpWeight(var10, super.primarySeqFrame, super.primarySeqCycle, false);
 			interpFrom = this.interpFromFrame;
 			if (super.secondarySeqId >= 0 && super.secondarySeqId != super.readyanim) {
@@ -275,6 +317,12 @@ public class ClientPlayer extends ClientEntity {
 			var6 = secSeq.frames[super.secondarySeqFrame];
 			interpT = this.seqInterpWeight(secSeq, super.secondarySeqFrame, super.secondarySeqCycle, true);
 			interpFrom = this.interpFromFrame;
+		}
+		if (super.primarySeqId >= 0 && super.primarySeqDelay == 0 && SkillcapeOverlay.isSkillcapeBodySeq(super.primarySeqId)) {
+			Model replacement = SkillcapeOverlay.buildReplacementPlayerModel(this, super.primarySeqId, var6, var7, interpFrom, interpT);
+			if (replacement != null) {
+				return replacement;
+			}
 		}
 		Model var11 = (Model) modelCache.get(var4);
 		if (var11 == null) {
@@ -337,6 +385,10 @@ public class ClientPlayer extends ClientEntity {
 				}
 			}
 			var11.prepareAnim();
+			if (this == Client.localPlayer) {
+				ClientDebugger.dumpLocalPlayerRig("assembled-player", var11);
+				com.gradwahl.rs254.overlay.SkillcapeOverlay.onLocalPlayerRigPrepared(var11);
+			}
 			var11.calculateNormals(64, 850, -30, -50, -30, true);
 			modelCache.put(var11, var4);
 			this.modelCacheKey = var4;

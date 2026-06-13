@@ -79,7 +79,17 @@ public class World {
 	public static final int[] MIDDEP_128 = new int[] { 1, 1, 0, 0, 0, 8, 0, 0, 8 };
 
 	@ObfuscatedName("s.eb")
-	public static final int[] TEXTURE_HSL = new int[] { 41, 39248, 41, 4643, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 43086, 41, 41, 41, 41, 41, 41, 41, 8602, 41, 28992, 41, 41, 41, 41, 41, 5056, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 3131, 41, 41, 41 };
+	public static final int[] TEXTURE_HSL = buildTextureHsl();
+
+	private static int[] buildTextureHsl() {
+		int[] hsl = new int[Pix3D.TEXTURE_COUNT];
+		for (int i = 0; i < hsl.length; i++) {
+			hsl[i] = 41;
+		}
+		int[] rev254 = new int[] { 41, 39248, 41, 4643, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 43086, 41, 41, 41, 41, 41, 41, 41, 8602, 41, 28992, 41, 41, 41, 41, 41, 5056, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 3131, 41, 41, 41 };
+		System.arraycopy(rev254, 0, hsl, 0, rev254.length);
+		return hsl;
+	}
 
 	@ObfuscatedName("s.fb")
 	public int[] mergeIndexA = new int[10000];

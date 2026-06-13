@@ -4,7 +4,10 @@ import jagex2.client.GameShell;
 import jagex2.client.Client;
 import jagex2.graphics.Pix3D;
 import jagex2.graphics.PixMap;
+import jagex2.graphics.Pix32;
 import jagex2.graphics.TriangleRenderer;
+import jagex2.io.JagFile;
+import jagex2.io.Packet;
 import com.gradwahl.rs254.ClientDebugger;
 import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.opengl.GL;
@@ -22,6 +25,8 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.io.FileNotFoundException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -46,6 +51,7 @@ import javax.swing.text.html.HTMLEditorKit;
 
 import com.gradwahl.rs254.ClientConfig;
 import com.gradwahl.rs254.discord.DiscordRichPresence;
+import sign.signlink;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -78,6 +84,25 @@ public final class GLRenderer implements TriangleRenderer {
     private static final int SIDEBAR_TABS    = 6;
     private static final int TAB_ICON_SIZE   = 22;
     private static final String DISCORD_APP_ID = "1507449981689270283";
+
+    // Custom client title bar. GLFW uses the native Windows border by default,
+    // which is 29px on this client. RuneLite's bar is 26px, so the in-game
+    // OpenGL window is undecorated and draws its own matching bar.
+    private static final int CLIENT_TITLE_BAR_H = 26;
+    private static final int RUNELITE_WINDOW_EXTRA_W = 8;  // 765 + 8 = 773 px window width
+    private static final int RUNELITE_WINDOW_EXTRA_H = 0;  // 503 + 26 + 0 = 529 px window height
+    private static final int RUNELITE_CANVAS_X = 0;        // centered; kept for sidebar-inside path
+    private static final int RUNELITE_CANVAS_TOP = 0;      // game pinned to top of content area
+    private static final int CLIENT_TITLE_BUTTON_W = 46;
+    private static final int CLIENT_TITLE_BG = 0xFF2B2B2B;
+    private static final float CLIENT_TITLE_BG_R = ((CLIENT_TITLE_BG >> 16) & 0xFF) / 255.0f;
+    private static final float CLIENT_TITLE_BG_G = ((CLIENT_TITLE_BG >> 8) & 0xFF) / 255.0f;
+    private static final float CLIENT_TITLE_BG_B = (CLIENT_TITLE_BG & 0xFF) / 255.0f;
+    private static final int CLIENT_TITLE_BORDER = 0xFF1F1F1F;
+    private static final int CLIENT_TITLE_TEXT = 0xFFD8D8D8;
+    private static final int CLIENT_TITLE_BUTTON_HOVER = 0xFF3A3A3A;
+    private static final int CLIENT_TITLE_CLOSE_HOVER = 0xFFC42B1C;
+    private static final String CLIENT_TITLE_BASE = "RS2 user client - release #" + signlink.clientversion;
     private static final String[] AFK_LABELS = {
             "90 Seconds", "2 Minutes", "5 Minutes", "10 Minutes", "30 Minutes", "Never"
     };
@@ -423,12 +448,50 @@ public final class GLRenderer implements TriangleRenderer {
             MemoryUtil.memAllocFloat(MAX_VERTS * FLOATS_PER_VERT);
     private int vertCount;
 
-    private final int[] gpuTex   = new int[50];   // OpenGL texture IDs per slot
+    private final int[] gpuTex   = new int[Pix3D.TEXTURE_COUNT]; // OpenGL texture IDs per slot
     private int         currentTexId = -1;         // texture bound for current batch
+
+    // HD world-space pass (Phase 2). Lazily created; failures disable it without
+    // touching the SD path. World/plane are pushed in each frame by the client.
+    private HdSceneRenderer hdScene;
+    private HdSceneFrame    hdFrame;
+    // Cached per-frame viewport scissor bounds in GL framebuffer coords {x,y,w,h}.
+    // Computed once in beginFrame and reused by flushBatch to clip the SD triangle batch.
+    private int[] frameSceneScissor;
+    private final HdSceneRenderer.HdCamera hdCam = new HdSceneRenderer.HdCamera();
 
     // UI overlay pass
     private int     uiProg, uiQuadVao, uiQuadVbo, uiTex, uiTexLoc, uiUMinLoc, uiUMaxLoc;
     private IntBuffer uiDirectBuf;  // direct (off-heap) buffer for glTexSubImage2D
+
+    // Native-resolution custom title bar for the in-game GLFW window.
+    private BufferedImage titleBarBuf;
+    private IntBuffer     titleBarDirect;
+    private int           titleBarTex;
+    private int           titleBarBufW, titleBarBufH;
+    private boolean       titleBarDirty = true;
+    private boolean       titleMinimizeHover;
+    private boolean       titleCloseHover;
+    private boolean       titleMaximizeHover;
+    private boolean       titleSidebarHover;
+    private boolean       titleDiscordHover;
+    private boolean       glTitleMaximized = false;
+    private int           glSavedX, glSavedY, glSavedW, glSavedH;
+    private boolean       glSidebarOpen = false;
+    private boolean       titleDragging;
+    private int           titleDragOffsetX;
+    private int           titleDragOffsetY;
+    private String        loggedInUsername = "";
+
+    // ── Edge-drag resize (GLFW window) ──────────────────────────────────────
+    private static final int GL_RESIZE_BORDER = 6;
+    private int    glResizeEdge = 0; // bitmask: 1=left 2=right 8=bottom
+    private double glResizeCursorStartAbsX, glResizeCursorStartAbsY;
+    private int    glResizeWinStartX, glResizeWinStartY, glResizeWinStartW, glResizeWinStartH;
+    private long   glCursorHResize = NULL;
+    private long   glCursorVResize = NULL;
+    private long   glCursorNWSE    = NULL;
+    private long   glCursorNESW    = NULL;
 
     // Tab icons — loaded once from resources, drawn in the sidebar rail
     private final BufferedImage[] tabIcons = new BufferedImage[SIDEBAR_TABS];
@@ -450,7 +513,14 @@ public final class GLRenderer implements TriangleRenderer {
     private int           worldMapKeyPage    = 0;
     private boolean       worldMapFollowing  = false;
     private boolean       worldMapFullscreen = false;
+    private boolean       worldMapFloating = false;
+    private boolean       worldMapPoiLoaded = false;
+    private int           worldMapKeyHover = -1;
+    private int           worldMapKeySelection = -1;
+    private int           worldMapKeyFlashTicks = 0;
     private volatile String  worldmapStatus  = null;
+    private final List<WorldMapFunctionPoint> worldMapFunctionPoints = new ArrayList<>();
+    private final BufferedImage[] worldMapFunctionSprites = new BufferedImage[100];
     // Tile coordinate origin (top-left of rendered image = tile X/Z of pixel 0,0)
     private static final int WM_ORIGIN_X = 1856;  // westernmost tile X  (chunk 29 * 64)
     private static final int WM_ORIGIN_Z = 1280;  // southernmost tile Z (chunk 20 * 64)
@@ -467,11 +537,44 @@ public final class GLRenderer implements TriangleRenderer {
     private static final int WM_DETAIL_REGION_MAX_Z = 62;
     private static final int WM_DEFAULT_TILE_X = 50 * WM_REGION_SIZE + WM_REGION_SIZE / 2;
     private static final int WM_DEFAULT_TILE_Z = 50 * WM_REGION_SIZE + WM_REGION_SIZE / 2;
+    private static final float WM_DEFAULT_ZOOM = 2.0f;
+    private static final int WORLD_MAP_KEY_PANEL_W = 164;
+    private static final int WORLD_MAP_KEY_ROW_STEP = 17;
+    private static final int WORLD_MAP_KEY_FOOTER_H = 18;
+    private static final int WORLD_MAP_KEY_FLASH_TICKS = 180;
+    private static final int WORLD_MAP_HEADER_H = 34;
+    private static final int WORLD_MAP_SURFACE_ORIGIN_X = 36 << 6;
+    private static final int WORLD_MAP_SURFACE_ORIGIN_Z = 44 << 6;
+    private static final int WORLD_MAP_SURFACE_W = 20 << 6;
+    private static final int WORLD_MAP_SURFACE_H = 19 << 6;
+    private static final String[] WORLD_MAP_KEY_NAMES = {
+            "General Store", "Sword Shop", "Magic Shop", "Axe Shop", "Helmet Shop", "Bank",
+            "Quest Start", "Amulet Shop", "Mining Site", "Furnace", "Anvil", "Combat Training",
+            "Dungeon", "Staff Shop", "Platebody Shop", "Platelegs Shop", "Scimitar Shop",
+            "Archery Shop", "Shield Shop", "Altar", "Herbalist", "Jewelery", "Gem Shop",
+            "Crafting Shop", "Candle Shop", "Fishing Shop", "Fishing Spot", "Clothes Shop",
+            "Apothecary", "Silk Trader", "Kebab Seller", "Pub/Bar", "Mace Shop", "Tannery",
+            "Rare Trees", "Spinning Wheel", "Food Shop", "Cookery Shop", "???", "Water Source",
+            "Cooking Range", "Skirt Shop", "Potters Wheel", "Windmill", "Mining Shop",
+            "Chainmail Shop", "Silver Shop", "Fur Trader", "Spice Shop"
+    };
 
     // Player world tile position — updated each frame by Client
     public static volatile int playerTileX = -1;
     public static volatile int playerTileZ = -1;
     public static volatile int playerPlane = 0;
+
+    private static final class WorldMapFunctionPoint {
+        private final int functionId;
+        private final int tileX;
+        private final int tileZ;
+
+        private WorldMapFunctionPoint(int functionId, int tileX, int tileZ) {
+            this.functionId = functionId;
+            this.tileX = tileX;
+            this.tileZ = tileZ;
+        }
+    }
 
     // Native-resolution sidebar — rendered via Java2D at physical screen pixels
     private java.awt.image.BufferedImage sidebarNativeBuf;
@@ -499,6 +602,7 @@ public final class GLRenderer implements TriangleRenderer {
     public static volatile boolean settingDiscordRichPresence;
     public static volatile boolean settingFps60Enabled;
     private static volatile long settingFps60SuppressedUntilMs;
+    private final boolean customSidebarEnabled = false;
     private boolean sidebarOpen;
     private int     sidebarTab;
     private boolean sidebarGpuEnabled   = true;
@@ -510,7 +614,15 @@ public final class GLRenderer implements TriangleRenderer {
     private final String clientVersionText = "Version: " + ClientConfig.currentVersionLabel();
 
     // XP session tracking — updated by Client when XP packets arrive
-    public static final long[] xpSessionGains = new long[25];
+    public static final long[] xpSessionGains    = new long[25];
+    // Per-skill timestamp of most recent gain — used to sort stacked tracker boxes
+    public static final long[] xpSkillLastGainMs = new long[25];
+    // Millisecond timestamp when the first XP was gained this session (0 = not started)
+    public static long xpSessionStartMs   = 0L;
+    // Last skill index that received XP (-1 = none yet)
+    public static int  xpTrackerLastSkill  = -1;
+    // Millisecond timestamp of the most recent XP gain (for tracker box visibility)
+    public static long xpTrackerLastGainMs = 0L;
     // When true, Client renders floating XP drops on the viewport
     public static boolean xpScreenEnabled = false;
     // Player info for Hiscores panel (populated by Client)
@@ -586,7 +698,7 @@ public final class GLRenderer implements TriangleRenderer {
     // for their dark outline, so 1 cannot safely represent transparency.
     public static final int UI_TRANSPARENT_SENTINEL = 0x01000000;
     // Viewport draw position in uiBuffer (set from Client after areaViewport is created).
-    public static int vpDrawX = 4, vpDrawY = 4, vpW = 512, vpH = 334;
+    public static int vpDrawX = OsrsFixedGameframe.VIEWPORT_X, vpDrawY = OsrsFixedGameframe.VIEWPORT_Y, vpW = OsrsFixedGameframe.VIEWPORT_W, vpH = OsrsFixedGameframe.VIEWPORT_H;
 
     // Input routing
     private GameShell shell;
@@ -612,8 +724,8 @@ public final class GLRenderer implements TriangleRenderer {
         this.screenW = screenW;
         this.screenH = screenH;
         this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;
-        this.windowW = screenW + SIDEBAR_RAIL_W;
-        this.windowH = screenH;
+        this.windowW = outputW();
+        this.windowH = windowedLogicalHeight();
         loadSettings();
     }
 
@@ -629,7 +741,8 @@ public final class GLRenderer implements TriangleRenderer {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE,   GLFW_FALSE);
-        long win = glfwCreateWindow(w, h, "RS254 - OpenGL", NULL, NULL);
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        long win = glfwCreateWindow(w, h, titleBarText(), NULL, NULL);
         if (win != NULL) return win;
 
         // Attempt 2: OpenGL 3.3 compatibility profile (some older/VM drivers)
@@ -639,7 +752,8 @@ public final class GLRenderer implements TriangleRenderer {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE,   GLFW_FALSE);
-        win = glfwCreateWindow(w, h, "RS254 - OpenGL", NULL, NULL);
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        win = glfwCreateWindow(w, h, titleBarText(), NULL, NULL);
         if (win != NULL) { System.err.println("[GL] Using compatibility profile fallback"); }
         return win;
     }
@@ -660,10 +774,16 @@ public final class GLRenderer implements TriangleRenderer {
         if (primaryMonitor != NULL) {
             glfwGetMonitorContentScale(primaryMonitor, xscale, yscale);
         }
-        int initW = Math.max(1, Math.round(windowW / xscale[0]));
-        int initH = Math.max(1, Math.round(screenH / yscale[0]));
+        int initW = Math.max(1, Math.round(outputW() / xscale[0]));
+        int initH = Math.max(1, Math.round(windowedLogicalHeight() / yscale[0]));
 
         window = tryCreateWindow(initW, initH);
+        if (window != NULL) {
+            int[] ww = new int[1], wh = new int[1];
+            glfwGetWindowSize(window, ww, wh);
+            windowW = Math.max(1, ww[0]);
+            windowH = Math.max(1, wh[0]);
+        }
         if (window == NULL) throw new RuntimeException(
             "GLFW window creation failed — OpenGL 3.3 is required.\n" +
             "Update your GPU drivers, or on a VM enable 3D acceleration.\n" +
@@ -683,14 +803,53 @@ public final class GLRenderer implements TriangleRenderer {
         glUniform2f(uScreen, screenW, screenH);
         glUniform1i(uTex, 0);
 
-        glClearColor(0f, 0f, 0f, 1f);
+        glClearColor(0f, 0f, 0f, 1f);  // black background behind game canvas
         restoreSceneGlState();
 
         setupUIPass();
         setupCallbacks();
         updateWindowSizeLimits();
         updateOutputViewport();
+        if (Boolean.getBoolean("rs254.gl.showAtStartup")) {
+            showWindow();
+        }
+    }
+
+    /** Show the window centered on the primary monitor (first launch). */
+    public void showWindow() {
+        long monitor = glfwGetPrimaryMonitor();
+        int x = Integer.MIN_VALUE, y = Integer.MIN_VALUE;
+        if (monitor != NULL) {
+            org.lwjgl.glfw.GLFWVidMode vidMode = glfwGetVideoMode(monitor);
+            if (vidMode != null) {
+                int[] mx = new int[1], my = new int[1];
+                glfwGetMonitorPos(monitor, mx, my);
+                int[] ww = new int[1], wh = new int[1];
+                glfwGetWindowSize(window, ww, wh);
+                x = mx[0] + (vidMode.width()  - ww[0]) / 2;
+                y = my[0] + (vidMode.height() - wh[0]) / 2;
+            }
+        }
+        showWindowAt(x, y);
+    }
+
+    /** Show the window at the given screen position, or centered if x == Integer.MIN_VALUE. */
+    public void showWindowAt(int x, int y) {
+        if (window == NULL || glfwGetWindowAttrib(window, GLFW_VISIBLE) == GLFW_TRUE) {
+            return;
+        }
+        if (x != Integer.MIN_VALUE) {
+            glfwSetWindowPos(window, x, y);
+        }
+        // Pre-fill both front and back buffers with a clean frame so neither the
+        // stale back-buffer nor garbage appears the instant the window becomes visible.
+        for (int i = 0; i < 2; i++) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            drawClientTitleBar();
+            glfwSwapBuffers(window);
+        }
         glfwShowWindow(window);
+        glfwPollEvents();
     }
 
     private void setWindowIcon() {
@@ -794,6 +953,8 @@ public final class GLRenderer implements TriangleRenderer {
         if (!frameDrawable) {
             return;
         }
+        // Cache scissor bounds for this frame so flushBatch can clip the SD batch cheaply.
+        frameSceneScissor = computeSceneScissor();
         if (clearScene) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
@@ -803,9 +964,11 @@ public final class GLRenderer implements TriangleRenderer {
         // Clear the viewport region so the 3D GL scene shows through each frame.
         // Non-viewport UI (sidebars, chat) persists and redraws only when RS2 says so.
         if (clearViewport && PixMap.uiBuffer != null) {
+            // Clear 2 extra pixels on the right so the HD scene covers the stone-frame edge line.
+            int clearW = Math.min(vpW + 2, PixMap.uiWidth - vpDrawX);
             for (int row = 0; row < vpH; row++) {
                 int off = (vpDrawY + row) * PixMap.uiWidth + vpDrawX;
-                java.util.Arrays.fill(PixMap.uiBuffer, off, off + vpW, 0);
+                java.util.Arrays.fill(PixMap.uiBuffer, off, off + clearW, 0);
             }
         }
     }
@@ -816,8 +979,11 @@ public final class GLRenderer implements TriangleRenderer {
             return;
         }
         flushBatch();
+        renderHdScene();
         if (restoreCooldownFrames > 0) {
             restoreCooldownFrames--;
+            drawUIOverlay();
+            drawClientTitleBar();
             glfwSwapBuffers(window);
             return;
         }
@@ -825,7 +991,158 @@ public final class GLRenderer implements TriangleRenderer {
         sampledFrames++;
         updateMetrics();
         drawStatsOverlay();
+        drawWindowBorder();
+        drawClientTitleBar();
         glfwSwapBuffers(window);
+    }
+
+    /**
+     * Start collecting model triangles for the HD world-space pass. This must wrap
+     * only the 3D scene render; UI/inventory model renders should stay out.
+     */
+    public void beginHdFrame(jagex2.client.Client client, jagex2.dash3d.World world, int plane) {
+        if (hdScene == null) {
+            hdScene = new HdSceneRenderer(vpW, vpH);
+        }
+        hdScene.beginModelCapture();
+        jagex2.dash3d.Model.hdModelSink = hdScene;
+    }
+
+    /**
+     * Push the world + plane the HD pass should draw this frame. Called by the
+     * client right after it kicks off the scene render, so the HD pass reads the
+     * same camera/plane state the SD scene used.
+     */
+    public void setHdFrame(jagex2.client.Client client, jagex2.dash3d.World world, int plane) {
+        if (jagex2.dash3d.Model.hdModelSink == hdScene) {
+            jagex2.dash3d.Model.hdModelSink = null;
+        }
+        // Snapshot camera + projection centre NOW, while they still hold the scene's
+        // values. After this point the client draws the minimap, which overwrites
+        // Pix3D.projectionX/Y (and the World camera statics stay valid only until the
+        // next renderAll). Reading them later in endFrame would mis-place the pass.
+        hdCam.x = jagex2.dash3d.World.cx;
+        hdCam.y = jagex2.dash3d.World.cy;
+        hdCam.z = jagex2.dash3d.World.cz;
+        hdCam.sinX = jagex2.dash3d.World.cameraSinX / 65536f;
+        hdCam.cosX = jagex2.dash3d.World.cameraCosX / 65536f;
+        hdCam.sinY = jagex2.dash3d.World.cameraSinY / 65536f;
+        hdCam.cosY = jagex2.dash3d.World.cameraCosY / 65536f;
+        hdCam.projX = jagex2.graphics.Pix3D.projectionX;
+        hdCam.projY = jagex2.graphics.Pix3D.projectionY;
+        hdFrame = HdSceneFrame.capture(world, plane, hdCam, client);
+    }
+
+    /** Run the HD world-space pass (Phase 2). No-op until a frame is set. */
+    private void renderHdScene() {
+        if (hdFrame == null || hdFrame.world == null) {
+            return;
+        }
+        if (hdScene == null) {
+            hdScene = new HdSceneRenderer(vpW, vpH);
+        }
+        clearGameViewportForHdScene(hdScene.skyRed(), hdScene.skyGreen(), hdScene.skyBlue());
+        hdScene.render(hdFrame);
+        hdFrame = null;
+    }
+
+    /**
+     * Compute the game viewport region in GL framebuffer coordinates (Y=0 bottom).
+     * Returns {x, y, w, h} or null if the framebuffer has no size yet.
+     * The width is extended by 2px to cover the stone-frame edge line.
+     */
+    private int[] computeSceneScissor() {
+        int[] width = new int[1];
+        int[] height = new int[1];
+        glfwGetFramebufferSize(window, width, height);
+        if (width[0] <= 0 || height[0] <= 0) {
+            return null;
+        }
+        int contentH = contentFramebufferH(height[0]);
+        int sceneX, sceneY;
+        double sceneScale;
+        if (sidebarInsideWindow()) {
+            sceneScale  = insideGameScale(width[0], contentH);
+            int gameW   = Math.max(1, (int) Math.round(screenW * sceneScale));
+            int gameH   = Math.max(1, (int) Math.round(screenH * sceneScale));
+            int gameX   = insideGameX(width[0], gameW);
+            int gameY   = (contentH - gameH) / 2;
+            sceneX = gameX + (int) Math.round(vpDrawX * sceneScale);
+            sceneY = gameY + (int) Math.round((screenH - vpDrawY - vpH) * sceneScale);
+        } else {
+            double dpiScale = windowW > 0 ? (double) width[0] / windowW : 1.0;
+            sceneScale = Math.min(dpiScale, Math.min((double) width[0] / outputW(),
+                                  (double) contentH / screenH));
+            int canvasW = (int) Math.round(screenW * sceneScale);
+            int canvasH = (int) Math.round(screenH * sceneScale);
+            int canvasX = (width[0] - canvasW) / 2
+                          + (int) Math.round(LiveTuner.canvasOffsetX * dpiScale);
+            int canvasY = contentH - canvasH
+                          - (int) Math.round(LiveTuner.canvasOffsetY * dpiScale);
+            sceneX = canvasX + (int) Math.round(vpDrawX * sceneScale)
+                     + (int) Math.round(LiveTuner.viewportOffsetX * dpiScale);
+            sceneY = canvasY + (int) Math.round((screenH - vpDrawY - vpH) * sceneScale)
+                     - (int) Math.round(LiveTuner.viewportOffsetY * dpiScale);
+        }
+        int sceneW = Math.max(1, (int) Math.round((vpW + 2) * sceneScale));
+        int sceneH = Math.max(1, (int) Math.round(vpH * sceneScale));
+        return new int[]{sceneX, sceneY, sceneW, sceneH};
+    }
+
+    private void clearGameViewportForHdScene(float r, float g, float b) {
+        int[] sc = computeSceneScissor();
+        if (sc == null) return;
+
+        // The scene sits at (vpDrawX, vpDrawY) within the 765×503 canvas (canvas Y=0 top).
+        // In GL framebuffer coords (Y=0 bottom):
+        //   sceneY = canvasBottomGL + (screenH - vpDrawY - vpH) * scale
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(sc[0], sc[1], sc[2], sc[3]);
+        glClearColor(r, g, b, 1f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClearColor(0f, 0f, 0f, 1f);
+        // Leave scissor enabled so the HD scene cannot render behind UI panels.
+        // HdSceneRenderer will adjust it for FBO-local coords and disable it on exit.
+        glViewport(sc[0], sc[1], sc[2], sc[3]);
+    }
+
+    private int[] computeLogicalRectInFramebuffer(int logicalX, int logicalY, int logicalW, int logicalH) {
+        int[] width = new int[1];
+        int[] height = new int[1];
+        glfwGetFramebufferSize(window, width, height);
+        if (width[0] <= 0 || height[0] <= 0) {
+            return null;
+        }
+        int contentH = contentFramebufferH(height[0]);
+        double scale;
+        int canvasX;
+        int canvasY;
+        if (sidebarInsideWindow()) {
+            scale = insideGameScale(width[0], contentH);
+            int gameW = Math.max(1, (int) Math.round(screenW * scale));
+            int gameH = Math.max(1, (int) Math.round(screenH * scale));
+            canvasX = insideGameX(width[0], gameW);
+            canvasY = (contentH - gameH) / 2;
+        } else {
+            double dpiScale = windowW > 0 ? (double) width[0] / windowW : 1.0;
+            scale = Math.min(dpiScale, Math.min((double) width[0] / outputW(), (double) contentH / screenH));
+            int canvasW = (int) Math.round(screenW * scale);
+            int canvasH = (int) Math.round(screenH * scale);
+            canvasX = (width[0] - canvasW) / 2 + (int) Math.round(LiveTuner.canvasOffsetX * dpiScale);
+            canvasY = contentH - canvasH - (int) Math.round(LiveTuner.canvasOffsetY * dpiScale);
+        }
+        int x = canvasX + (int) Math.round(logicalX * scale);
+        int y = canvasY + (int) Math.round((screenH - logicalY - logicalH) * scale);
+        int w = Math.max(1, (int) Math.round(logicalW * scale));
+        int h = Math.max(1, (int) Math.round(logicalH * scale));
+        return new int[] {x, y, w, h};
+    }
+
+    private void cycleHdDebugMode() {
+        if (hdScene == null) {
+            hdScene = new HdSceneRenderer(vpW, vpH);
+        }
+        System.out.println("[HD] debug mode: " + hdScene.cycleDebugMode());
     }
 
     private void sleepWhileRenderPaused() {
@@ -873,6 +1190,7 @@ public final class GLRenderer implements TriangleRenderer {
 
     public void destroy() {
         flushBatch();
+        if (hdScene != null) hdScene.dispose();
         glDeleteBuffers(vbo);
         glDeleteVertexArrays(vao);
         glDeleteProgram(prog);
@@ -881,10 +1199,12 @@ public final class GLRenderer implements TriangleRenderer {
         glDeleteProgram(uiProg);
         glDeleteTextures(uiTex);
         if (sidebarNativeTex != 0) glDeleteTextures(sidebarNativeTex);
+        if (titleBarTex != 0) glDeleteTextures(titleBarTex);
         for (int t : gpuTex) if (t != 0) glDeleteTextures(t);
         MemoryUtil.memFree(buf);
         if (uiDirectBuf      != null) MemoryUtil.memFree(uiDirectBuf);
         if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
+        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
         hiscoresFetcher.shutdownNow();
         DISCORD_RPC.disconnect();
         glfwFreeCallbacks(window);
@@ -951,6 +1271,7 @@ public final class GLRenderer implements TriangleRenderer {
 
     /** Upload (or re-upload) one game texture slot to the GPU. */
     public void uploadTexture(int texId) {
+        if (texId < 0 || texId >= Pix3D.TEXTURE_COUNT) return;
         if (Pix3D.textures[texId] == null || Pix3D.texturePalette[texId] == null) return;
         int[] texels = Pix3D.getTexels(texId);
         int   size   = Pix3D.lowMem ? 64 : 128;
@@ -986,6 +1307,7 @@ public final class GLRenderer implements TriangleRenderer {
     // -------------------------------------------------------------------------
 
     private void bindTexture(int texId) {
+        if (texId < 0 || texId >= Pix3D.TEXTURE_COUNT) return;
         if (gpuTex[texId] == 0) uploadTexture(texId);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gpuTex[texId]);
@@ -1001,7 +1323,16 @@ public final class GLRenderer implements TriangleRenderer {
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferSubData(GL_ARRAY_BUFFER, 0, buf);
         glBindVertexArray(vao);
+        // The SD rasterizer forwards raw projected vertices to this batch before the
+        // software clipper runs, so triangles can have coordinates outside the viewport.
+        // Apply a scissor to prevent them from bleeding into the chatbox/sidebar.
+        boolean applyScissor = frameSceneScissor != null;
+        if (applyScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(frameSceneScissor[0], frameSceneScissor[1], frameSceneScissor[2], frameSceneScissor[3]);
+        }
         glDrawArrays(GL_TRIANGLES, 0, vertCount);
+        if (applyScissor) glDisable(GL_SCISSOR_TEST);
         buf.clear();
         vertCount = 0;
     }
@@ -1075,11 +1406,16 @@ public final class GLRenderer implements TriangleRenderer {
         glBindTexture(GL_TEXTURE_2D, uiTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, maxUiW, screenH, 0,
                      GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
         sidebarNativeTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        titleBarTex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, titleBarTex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
@@ -1109,8 +1445,9 @@ public final class GLRenderer implements TriangleRenderer {
 
         int[] fw = new int[1], fh = new int[1];
         glfwGetFramebufferSize(window, fw, fh);
+        int contentH = contentFramebufferH(fh[0]);
         if (worldMapFullscreen) {
-            drawWorldMapFullscreenNative(fw[0], fh[0]);
+            drawWorldMapFullscreenNative(fw[0], contentFramebufferH(fh[0]));
             glUseProgram(prog);
             updateOutputViewport();
             return;
@@ -1118,12 +1455,12 @@ public final class GLRenderer implements TriangleRenderer {
         int sidebarLogW = sidebarLogicalW();
 
         if (sidebarInsideWindow()) {
-            double scale  = insideGameScale(fw[0], fh[0]);
+            double scale  = insideGameScale(fw[0], contentH);
             int gameW    = Math.max(1, (int) Math.round(screenW    * scale));
             int gameH    = Math.max(1, (int) Math.round(screenH    * scale));
             int gameX    = insideGameX(fw[0], gameW);
             int sidebarW = insideSidebarW(fw[0], gameX, gameW, sidebarLogW, scale);
-            int vertOff  = (fh[0] - gameH) / 2;
+            int vertOff  = (contentH - gameH) / 2;
 
             glUniform1f(uiUMinLoc, 0f);
             glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
@@ -1135,20 +1472,28 @@ public final class GLRenderer implements TriangleRenderer {
                 drawSidebarNative(fw[0] - sidebarW, vertOff, sidebarW, gameH, scale, logicalStartX);
             }
         } else {
-            // Windowed 1:1 mode — compute actual DPI scale from framebuffer vs logical size
-            double scale   = (fw[0] > 0) ? (double) fw[0] / (screenW + sidebarLogW) : 1.0;
+            // Windowed 1:1 mode — draw the 765x503 game surface at native resolution,
+            // centered horizontally and pinned to the top of the content area.
+            double dpiScale = windowW > 0 ? (double) fw[0] / windowW : 1.0;
+            double scale    = Math.min(dpiScale, Math.min((double) fw[0] / outputW(), (double) contentH / screenH));
             int gameW      = Math.max(1, (int) Math.round(screenW    * scale));
             int gameH      = Math.max(1, (int) Math.round(screenH    * scale));
-            int sidebarW   = Math.max(1, (int) Math.round(sidebarLogW * scale));
-            // Top-align: if the window is taller than content, spare space goes below
-            int vertOff    = fh[0] - gameH;
+            int sidebarW   = Math.max(0, (int) Math.round(sidebarLogW * scale));
+            int canvasX    = (fw[0] - gameW) / 2 + (int) Math.round(LiveTuner.canvasOffsetX * dpiScale);
+            int vertOff    = contentH - gameH - (int) Math.round(LiveTuner.canvasOffsetY * dpiScale);
 
             glUniform1f(uiUMinLoc, 0f);
             glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
-            glViewport(0, vertOff, gameW, gameH);
+            glViewport(canvasX, vertOff, gameW, gameH);
             glDrawArrays(GL_TRIANGLES, 0, 6);
 
-            drawSidebarNative(gameW, vertOff, sidebarW, gameH, scale, screenW);
+            if (sidebarW > 0) {
+                drawSidebarNative(canvasX + gameW, vertOff, sidebarW, gameH, scale, screenW);
+            }
+        }
+
+        if (worldMapFloating) {
+            drawWorldMapFloatingNative();
         }
 
         glUseProgram(prog);
@@ -1232,11 +1577,11 @@ public final class GLRenderer implements TriangleRenderer {
             sg.clearRect(0, 0, physW, physH);
             sg.scale((double) physW / screenW, (double) physH / screenH);
            fillUiRect(0, 0, screenW, screenH, 0xFF262626);
-           drawUiTextVerticallyCentered("WORLD MAP", 12, 11, 20, 2, 0xFFDCDCDC);
-           drawWorldMapHeaderControls(0, screenW);
-           drawSidebarHeaderCloseButton(screenW);
-            fillUiRect(0, 42, screenW, 1, 0xFF363636);
-            drawWorldMapView(0, 43, screenW, screenH - 43);
+           drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
+           drawWorldMapHeaderControls(0, 0, screenW);
+           drawSidebarHeaderCloseButton(0, screenW);
+            fillUiRect(0, WORLD_MAP_HEADER_H - 1, screenW, 1, 0xFF363636);
+            drawWorldMapView(0, WORLD_MAP_HEADER_H, screenW, screenH - WORLD_MAP_HEADER_H);
         } finally {
             sg.dispose();
             sg = null;
@@ -1253,6 +1598,58 @@ public final class GLRenderer implements TriangleRenderer {
         glUniform1f(uiUMinLoc, 0f);
         glUniform1f(uiUMaxLoc, 1f);
         glViewport(0, 0, physW, physH);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindTexture(GL_TEXTURE_2D, uiTex);
+    }
+
+    private void drawWorldMapFloatingNative() {
+        int[] rect = computeLogicalRectInFramebuffer(vpDrawX, vpDrawY, vpW, vpH);
+        if (rect == null || rect[2] <= 0 || rect[3] <= 0) {
+            return;
+        }
+        int physW = rect[2];
+        int physH = rect[3];
+        if (physW != sidebarNativeW || physH != sidebarNativeH) {
+            if (sidebarNativeBuf != null) sidebarNativeBuf.flush();
+            if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
+            sidebarNativeBuf = new BufferedImage(physW, physH, BufferedImage.TYPE_INT_ARGB);
+            sidebarNativeDirect = MemoryUtil.memAllocInt(physW * physH);
+            sidebarNativeW = physW;
+            sidebarNativeH = physH;
+            glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, physW, physH, 0,
+                    GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        }
+
+        sg = sidebarNativeBuf.createGraphics();
+        try {
+            sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+                    java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            sg.setBackground(new java.awt.Color(0, 0, 0, 0));
+            sg.clearRect(0, 0, physW, physH);
+            sg.scale((double) physW / vpW, (double) physH / vpH);
+            fillUiRect(0, 0, vpW, vpH, 0xF0262626);
+            drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
+            drawWorldMapHeaderControls(0, 0, vpW);
+            drawSidebarHeaderCloseButton(0, vpW);
+            fillUiRect(0, WORLD_MAP_HEADER_H - 1, vpW, 1, 0xFF363636);
+            drawWorldMapView(0, WORLD_MAP_HEADER_H, vpW, Math.max(0, vpH - WORLD_MAP_HEADER_H));
+        } finally {
+            sg.dispose();
+            sg = null;
+        }
+
+        int[] pixels = ((java.awt.image.DataBufferInt)
+                sidebarNativeBuf.getRaster().getDataBuffer()).getData();
+        sidebarNativeDirect.clear();
+        sidebarNativeDirect.put(pixels);
+        sidebarNativeDirect.flip();
+        glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
+                GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
+        glUniform1f(uiUMinLoc, 0f);
+        glUniform1f(uiUMaxLoc, 1f);
+        glViewport(rect[0], rect[1], rect[2], rect[3]);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindTexture(GL_TEXTURE_2D, uiTex);
     }
@@ -1333,6 +1730,108 @@ public final class GLRenderer implements TriangleRenderer {
         return tile;
     }
 
+    private void ensureWorldMapPoiData() {
+        if (worldMapPoiLoaded) return;
+        worldMapPoiLoaded = true;
+        // Sprites come from the game cache archive (already loaded by Client).
+        if (shell instanceof jagex2.client.Client) {
+            jagex2.client.Client c = (jagex2.client.Client) shell;
+            for (int i = 0; i < c.imageMapfunction.length && i < worldMapFunctionSprites.length; i++) {
+                if (c.imageMapfunction[i] != null) {
+                    worldMapFunctionSprites[i] = pix32ToBufferedImage(c.imageMapfunction[i]);
+                }
+            }
+        }
+        // POI points come from worldmap.jag (loc.dat).
+        try {
+            byte[] raw = readWorldMapJagBytes();
+            JagFile jag = new JagFile(raw);
+            loadWorldMapFunctionPoints(jag);
+        } catch (Exception e) {
+            System.err.println("[worldmap] failed to load POI data: " + e.getMessage());
+        }
+    }
+
+    private byte[] readWorldMapJagBytes() throws Exception {
+        try (InputStream in = GLRenderer.class.getResourceAsStream("/maps/254/worldmap.jag")) {
+            if (in != null) {
+                return in.readAllBytes();
+            }
+        }
+        Path[] candidates = {
+                Path.of("Server", "engine", "data", "pack", "mapview", "worldmap.jag"),
+                Path.of("..", "Server", "engine", "data", "pack", "mapview", "worldmap.jag")
+        };
+        for (Path candidate : candidates) {
+            if (Files.isRegularFile(candidate)) {
+                return Files.readAllBytes(candidate);
+            }
+        }
+        throw new FileNotFoundException("worldmap.jag missing");
+    }
+
+    private void loadWorldMapFunctionSprites(JagFile jag) {
+        for (int i = 0; i < worldMapFunctionSprites.length; i++) {
+            try {
+                Pix32 sprite = new Pix32(jag, "mapfunction", i);
+                sprite.trim();
+                worldMapFunctionSprites[i] = pix32ToBufferedImage(sprite);
+            } catch (Exception ignored) {
+                break;
+            }
+        }
+    }
+
+    private void loadWorldMapFunctionPoints(JagFile jag) {
+        byte[] locBytes = jag.read("loc.dat", null);
+        if (locBytes == null) return;
+        Packet data = new Packet(locBytes);
+        while (data.pos < data.data.length) {
+            int mx = data.g1() * 64 - WORLD_MAP_SURFACE_ORIGIN_X;
+            int mz = data.g1() * 64 - WORLD_MAP_SURFACE_ORIGIN_Z;
+            if (mx > 0 && mz > 0 && mx + 64 < WORLD_MAP_SURFACE_W && mz + 64 < WORLD_MAP_SURFACE_H) {
+                for (int x = 0; x < 64; x++) {
+                    int zIndex = WORLD_MAP_SURFACE_H - mz - 1;
+                    for (int z = -64; z < 0; z++) {
+                        while (true) {
+                            int opcode = data.g1();
+                            if (opcode == 0) {
+                                zIndex--;
+                                break;
+                            }
+                            if (opcode >= 160) {
+                                int functionId = opcode - 160;
+                                int tileX = WORLD_MAP_SURFACE_ORIGIN_X + mx + x;
+                                int tileZ = WORLD_MAP_SURFACE_ORIGIN_Z + WORLD_MAP_SURFACE_H - 1 - zIndex;
+                                worldMapFunctionPoints.add(new WorldMapFunctionPoint(functionId, tileX, tileZ));
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (int x = 0; x < 64; x++) {
+                    int opcode;
+                    for (int z = -64; z < 0; z++) {
+                        do {
+                            opcode = data.g1();
+                        } while (opcode != 0);
+                    }
+                }
+            }
+        }
+    }
+
+    private BufferedImage pix32ToBufferedImage(Pix32 sprite) {
+        BufferedImage image = new BufferedImage(sprite.wi, sprite.hi, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < sprite.hi; y++) {
+            for (int x = 0; x < sprite.wi; x++) {
+                int rgb = sprite.data[x + y * sprite.wi];
+                image.setRGB(x, y, rgb == 0 ? 0 : 0xFF000000 | rgb);
+            }
+        }
+        return image;
+    }
+
     private void drawTabIcon(int id, int cx, int cy, boolean active) {
         BufferedImage img = id >= 0 && id < tabIcons.length ? tabIcons[id] : null;
         if (img != null) {
@@ -1406,13 +1905,13 @@ public final class GLRenderer implements TriangleRenderer {
             fillUiRect(panelX, 0, panelW, screenH, 0xFF262626);
             fillUiRect(panelX + panelW - 1, 0, 1, screenH, 0xFF363636);
             if (sidebarTab == 3) {
-                drawUiTextVerticallyCentered(sidebarTitle(), panelX + 4, 11, 20, 0, 0xFFDCDCDC);
+                drawUiTextVerticallyCentered(sidebarTitle(), panelX + 4, 6, 20, 0, 0xFFDCDCDC);
             } else {
                 drawUiText(sidebarTitle(), panelX + 12, 17, 2, 0xFFDCDCDC);
             }
-            if (sidebarTab == 3) drawWorldMapHeaderControls(panelX, panelW);
-            drawSidebarHeaderCloseButton(panelX + panelW);
-            fillUiRect(panelX, 42, panelW, 1, 0xFF363636);
+            if (sidebarTab == 3) drawWorldMapHeaderControls(panelX, 0, panelW);
+            drawSidebarHeaderCloseButton(0, panelX + panelW);
+            fillUiRect(panelX, WORLD_MAP_HEADER_H - 1, panelW, 1, 0xFF363636);
             drawSidebarPanel(panelX);
         }
 
@@ -1560,60 +2059,122 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private int worldMapViewX() {
-        return worldMapFullscreen ? 0 : sidebarPanelX();
+        if (worldMapFullscreen) {
+            return 0;
+        }
+        if (worldMapFloating) {
+            return vpDrawX;
+        }
+        return sidebarPanelX();
     }
 
     private int worldMapViewY() {
-        return 43;
+        return worldMapFloating ? vpDrawY + WORLD_MAP_HEADER_H : WORLD_MAP_HEADER_H;
     }
 
     private int worldMapViewW() {
-        return worldMapFullscreen ? screenW : sidebarPanelW();
+        if (worldMapFullscreen) {
+            return screenW;
+        }
+        if (worldMapFloating) {
+            return vpW;
+        }
+        return sidebarPanelW();
     }
 
     private int worldMapViewH() {
-        return screenH - worldMapViewY();
+        return worldMapFloating ? Math.max(0, vpH - WORLD_MAP_HEADER_H) : screenH - worldMapViewY();
+    }
+
+    private int worldMapKeyPanelWidth() {
+        return Math.min(136, Math.max(112, worldMapViewW() / 5));
+    }
+
+    private int worldMapMapX() {
+        return worldMapViewX() + worldMapKeyPanelWidth();
+    }
+
+    private int worldMapMapY() {
+        return worldMapViewY();
+    }
+
+    private int worldMapMapW() {
+        return Math.max(32, worldMapViewW() - worldMapKeyPanelWidth());
+    }
+
+    private int worldMapMapH() {
+        return worldMapViewH();
+    }
+
+    private int worldMapKeyRows(int vh) {
+        return Math.max(1, (vh - WORLD_MAP_KEY_FOOTER_H) / WORLD_MAP_KEY_ROW_STEP);
+    }
+
+    private int worldMapVisibleKeyCount() {
+        int count = 0;
+        for (String name : WORLD_MAP_KEY_NAMES) {
+            if (!"???".equals(name)) count++;
+        }
+        return count;
+    }
+
+    private int worldMapKeyPageCount(int vh) {
+        int rows = worldMapKeyRows(vh);
+        return Math.max(1, (worldMapVisibleKeyCount() + rows - 1) / rows);
+    }
+
+    private int worldMapKeyIndexAtRow(int page, int row, int vh) {
+        int rows = worldMapKeyRows(vh);
+        int targetVisible = page * rows + row;
+        int visible = 0;
+        for (int i = 0; i < WORLD_MAP_KEY_NAMES.length; i++) {
+            if ("???".equals(WORLD_MAP_KEY_NAMES[i])) continue;
+            if (visible == targetVisible) return i;
+            visible++;
+        }
+        return -1;
+    }
+
+    private int worldMapKeyItemAt(int x, int y, int vx, int vy, int vh) {
+        int keyW = worldMapKeyPanelWidth();
+        if (x < vx || x >= vx + keyW || y < vy || y >= vy + vh - WORLD_MAP_KEY_FOOTER_H) {
+            return -1;
+        }
+        int row = (y - vy) / WORLD_MAP_KEY_ROW_STEP;
+        int index = worldMapKeyIndexAtRow(worldMapKeyPage, row, vh);
+        if (index < 0 || index >= WORLD_MAP_KEY_NAMES.length) {
+            return -1;
+        }
+        return index;
     }
 
     private void zoomMapAround(float factor, int pivotX, int pivotY) {
         float oldZoom = mapZoom;
         mapZoom = Math.max(0.03f, Math.min(12f, mapZoom * factor));
         float ratio = mapZoom / oldZoom;
-        float cx = pivotX - worldMapViewX();
-        float cy = pivotY - worldMapViewY();
+        float cx = pivotX - worldMapMapX();
+        float cy = pivotY - worldMapMapY();
         mapPanX = cx - (cx - mapPanX) * ratio;
         mapPanY = cy - (cy - mapPanY) * ratio;
     }
 
-    private void drawWorldMapHeaderControls(int panelX, int panelW) {
-        int right = panelX + panelW;
-        int keyX = right - (worldMapFullscreen ? 75 : 129);
-        drawWorldMapHeaderButton(keyX, 11, 29, "KEY", worldMapKeyVisible);
-        if (!worldMapFullscreen) {
-            drawWorldMapHeaderButton(right - 98, 11, 52, worldMapFollowing ? "UNFOLLOW" : "FOLLOW",
-                    worldMapFollowing);
-        }
-        drawWorldMapHeaderSquareButton(right - 44, 11);
+    private int worldMapHeaderY() {
+        return worldMapFloating ? vpDrawY : 0;
     }
 
-    private void drawWorldMapHeaderButton(int x, int y, int width, String label, boolean active) {
-        fillUiRect(x, y, width, 20, active ? 0xFF4B3D26 : 0xFF333333);
-        fillUiRect(x, y, width, 1, active ? 0xFFE89E14 : 0xFF555555);
-        fillUiRect(x, y + 19, width, 1, 0xFF1B1B1B);
-        drawUiTextCentered(label, x, y, width, 20, 0, active ? 0xFFE89E14 : 0xFFDCDCDC);
+    private boolean isWorldMapFloatingHit(int x, int y) {
+        return worldMapFloating
+                && x >= vpDrawX && x < vpDrawX + vpW
+                && y >= vpDrawY && y < vpDrawY + vpH;
     }
 
-    private void drawWorldMapHeaderSquareButton(int x, int y) {
-        fillUiRect(x, y, 20, 20, 0xFF333333);
-        fillUiRect(x, y, 20, 1, 0xFF555555);
-        fillUiRect(x, y + 19, 20, 1, 0xFF1B1B1B);
-        fillUiRect(x + 5, y + 5, 10, 10, 0xFF999999);
-        fillUiRect(x + 6, y + 6, 8, 8, 0xFF262626);
+    private void drawWorldMapHeaderControls(int panelX, int panelY, int panelW) {
+        drawSidebarHeaderCloseButton(panelY, panelX + panelW);
     }
 
-    private void drawSidebarHeaderCloseButton(int right) {
+    private void drawSidebarHeaderCloseButton(int panelY, int right) {
         int x = right - 22;
-        int y = 11;
+        int y = panelY + 7;
         fillUiRect(x, y, 20, 20, 0xFF333333);
         fillUiRect(x, y, 20, 1, 0xFF555555);
         fillUiRect(x, y + 19, 20, 1, 0xFF1B1B1B);
@@ -1625,6 +2186,66 @@ public final class GLRenderer implements TriangleRenderer {
         float py = (WM_ORIGIN_Z + WM_HEIGHT - 1) - tileZ;
         mapPanX = viewW / 2f - px * mapZoom;
         mapPanY = viewH / 2f - py * mapZoom;
+    }
+
+    private void drawWorldMapKeySidebar(int vx, int vy, int vh) {
+        int keyW = worldMapKeyPanelWidth();
+        int rows = worldMapKeyRows(vh);
+        int maxPage = worldMapKeyPageCount(vh) - 1;
+        fillUiRect(vx, vy, keyW, vh, 0xFF2A2A2A);
+        fillUiRect(vx, vy, keyW, 1, 0xFF555555);
+        fillUiRect(vx + keyW - 1, vy, 1, vh, 0xFF111111);
+        int y = vy + 3;
+        for (int row = 0; row < rows; row++) {
+            int index = worldMapKeyIndexAtRow(worldMapKeyPage, row, vh);
+            if (index < 0) break;
+            boolean hovered = index == worldMapKeyHover;
+            boolean active = index == worldMapKeySelection;
+            if (hovered || active) {
+                fillUiRect(vx + 1, y - 1, keyW - 2, WORLD_MAP_KEY_ROW_STEP, active ? 0xFF3F3523 : 0xFF303030);
+            }
+            BufferedImage sprite = index < worldMapFunctionSprites.length ? worldMapFunctionSprites[index] : null;
+            if (sprite != null) {
+                sg.drawImage(sprite, vx + 4, y, null);
+            }
+            drawUiText(WORLD_MAP_KEY_NAMES[index], vx + 22, y + 2, 0, 0xFFDCDCDC);
+            y += WORLD_MAP_KEY_ROW_STEP;
+        }
+        int footerY = vy + vh - WORLD_MAP_KEY_FOOTER_H;
+        fillUiRect(vx, footerY, keyW, WORLD_MAP_KEY_FOOTER_H, 0xFF202020);
+        drawUiText("<", vx + 8, footerY + 4, 1, worldMapKeyPage > 0 ? 0xFFDCDCDC : 0xFF666666);
+        drawUiText((worldMapKeyPage + 1) + " / " + (maxPage + 1), vx + keyW / 2 - 12, footerY + 4, 0, 0xFFDCDCDC);
+        drawUiText(">", vx + keyW - 16, footerY + 4, 1, worldMapKeyPage < maxPage ? 0xFFDCDCDC : 0xFF666666);
+    }
+
+    private static final java.awt.image.RescaleOp WM_FLASH_TINT = new java.awt.image.RescaleOp(
+            new float[]{ 2.0f, 2.0f, 0.2f, 1.0f },
+            new float[]{ 30f,  30f,  0f,   0f  }, null);
+
+    private void drawWorldMapFunctionIcons(int vx, int vy, int vw, int vh) {
+        if (worldMapKeySelection < 0) return;
+        BufferedImage selSprite = worldMapKeySelection < worldMapFunctionSprites.length
+                ? worldMapFunctionSprites[worldMapKeySelection] : null;
+        if (selSprite == null) return;
+        int hw = selSprite.getWidth() / 2;
+        int hh = selSprite.getHeight() / 2;
+        int cullR = Math.max(hw, hh) + 4;
+        boolean flashing = worldMapKeyFlashTicks > 0;
+        boolean flashOn = flashing && worldMapKeyFlashTicks % 10 < 5;
+        for (WorldMapFunctionPoint point : worldMapFunctionPoints) {
+            if (point.functionId != worldMapKeySelection) continue;
+            float imgX = point.tileX - WM_ORIGIN_X;
+            float imgY = (WM_ORIGIN_Z + WM_HEIGHT - 1) - point.tileZ;
+            int drawX = vx + Math.round(mapPanX + imgX * mapZoom);
+            int drawY = vy + Math.round(mapPanY + imgY * mapZoom);
+            if (drawX + cullR < vx || drawX - cullR >= vx + vw ||
+                drawY + cullR < vy || drawY - cullR >= vy + vh) continue;
+            if (flashOn) {
+                sg.drawImage(selSprite, WM_FLASH_TINT, drawX - hw, drawY - hh);
+            } else if (!flashing) {
+                sg.drawImage(selSprite, drawX - hw, drawY - hh, null);
+            }
+        }
     }
 
     private void drawWorldMapKey(int vx, int vy, int vw, int vh) {
@@ -1662,10 +2283,47 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private void drawWorldMapPanel(int panelX) {
-        drawWorldMapView(panelX, 43, sidebarPanelW(), screenH - 43);
+        drawWorldMapView(panelX, WORLD_MAP_HEADER_H, sidebarPanelW(), screenH - WORLD_MAP_HEADER_H);
+    }
+
+    public void openWorldMap() {
+        openWorldMapFullscreen();
+    }
+
+    public void openWorldMapFullscreen() {
+        worldMapFullscreen = true;
+        worldMapFloating = false;
+        worldMapFollowing = false;
+        worldMapKeyVisible = true;
+        worldMapKeyPage = 0;
+        worldMapKeySelection = -1;
+        worldMapKeyFlashTicks = 0;
+        mapDragging = false;
+        mapZoom = -1;
+        updateOutputViewport();
+    }
+
+    public void openWorldMapFloating() {
+        worldMapFloating = true;
+        worldMapFullscreen = false;
+        worldMapFollowing = false;
+        worldMapKeyVisible = true;
+        worldMapKeyPage = 0;
+        worldMapKeySelection = -1;
+        worldMapKeyFlashTicks = 0;
+        mapDragging = false;
+        mapZoom = -1;
+        updateOutputViewport();
     }
 
     private void drawWorldMapView(int vx, int vy, int vw, int vh) {
+        ensureWorldMapPoiData();
+        worldMapKeyHover = worldMapKeyItemAt(cursorX, cursorY, vx, vy, vh);
+        int mapX = worldMapMapX();
+        int mapY = worldMapMapY();
+        int mapW = worldMapMapW();
+        int mapH = worldMapMapH();
+        drawWorldMapKeySidebar(vx, vy, vh);
 
         // Trigger load on first open
         if (!worldMapLoaded && worldmapStatus == null) {
@@ -1681,29 +2339,25 @@ public final class GLRenderer implements TriangleRenderer {
 
         // First render after load: show crisp 1:1 terrain, centred on the player or mainland.
         if (mapZoom < 0) {
-            mapZoom = 1f;
+            mapZoom = WM_DEFAULT_ZOOM;
             int centreTileX = playerTileX >= 0 ? playerTileX : WM_DEFAULT_TILE_X;
             int centreTileZ = playerTileZ >= 0 ? playerTileZ : WM_DEFAULT_TILE_Z;
-            centreMapOnTile(centreTileX, centreTileZ, vw, vh);
+            centreMapOnTile(centreTileX, centreTileZ, mapW, mapH);
         }
         if (worldMapFollowing && playerTileX >= 0 && playerTileZ >= 0) {
-            centreMapOnTile(playerTileX, playerTileZ, vw, vh);
-        }
-        if (worldMapKeyVisible && !worldMapFullscreen) {
-            drawWorldMapKey(vx, vy, vw, vh);
-            return;
+            centreMapOnTile(playerTileX, playerTileZ, mapW, mapH);
         }
 
         // Clip to panel
         java.awt.Shape prevClip = sg.getClip();
-        sg.setClip(vx, vy, vw, vh);
+        sg.setClip(mapX, mapY, mapW, mapH);
 
         // Efficient src/dst rect rendering — only processes visible pixels
         float invZ = 1f / mapZoom;
         int sx1 = Math.max(0, (int)((-mapPanX) * invZ));
         int sy1 = Math.max(0, (int)((-mapPanY) * invZ));
-        int sx2 = Math.min(WM_WIDTH, (int)((vw - mapPanX) * invZ) + 1);
-        int sy2 = Math.min(WM_HEIGHT, (int)((vh - mapPanY) * invZ) + 1);
+        int sx2 = Math.min(WM_WIDTH, (int)((mapW - mapPanX) * invZ) + 1);
+        int sy2 = Math.min(WM_HEIGHT, (int)((mapH - mapPanY) * invZ) + 1);
         if (sx1 < sx2 && sy1 < sy2) {
             sg.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
                                 java.awt.RenderingHints.VALUE_RENDER_SPEED);
@@ -1720,10 +2374,10 @@ public final class GLRenderer implements TriangleRenderer {
                     if (tile == null) continue;
                     int imgX = (regionX - WM_REGION_MIN_X) * WM_REGION_SIZE;
                     int imgY = (WM_REGION_MAX_Z - regionZ) * WM_REGION_SIZE;
-                    int dx1 = vx + Math.round(mapPanX + imgX * mapZoom);
-                    int dy1 = vy + Math.round(mapPanY + imgY * mapZoom);
-                    int dx2 = vx + Math.round(mapPanX + (imgX + WM_REGION_SIZE) * mapZoom);
-                    int dy2 = vy + Math.round(mapPanY + (imgY + WM_REGION_SIZE) * mapZoom);
+                    int dx1 = mapX + Math.round(mapPanX + imgX * mapZoom);
+                    int dy1 = mapY + Math.round(mapPanY + imgY * mapZoom);
+                    int dx2 = mapX + Math.round(mapPanX + (imgX + WM_REGION_SIZE) * mapZoom);
+                    int dy2 = mapY + Math.round(mapPanY + (imgY + WM_REGION_SIZE) * mapZoom);
                     sg.drawImage(tile, dx1, dy1, dx2 - dx1, dy2 - dy1, null);
                 }
             }
@@ -1732,12 +2386,13 @@ public final class GLRenderer implements TriangleRenderer {
         }
 
         // Player dot — tile coords scaled to image pixel space
+        drawWorldMapFunctionIcons(mapX, mapY, mapW, mapH);
         if (playerTileX >= 0 && playerTileZ >= 0) {
             float imgX = playerTileX - WM_ORIGIN_X;
             float imgY = (WM_ORIGIN_Z + WM_HEIGHT - 1) - playerTileZ;
-            float dotX = vx + mapPanX + imgX * mapZoom;
-            float dotY = vy + mapPanY + imgY * mapZoom;
-            if (dotX >= vx && dotX < vx + vw && dotY >= vy && dotY < vy + vh) {
+            float dotX = mapX + mapPanX + imgX * mapZoom;
+            float dotY = mapY + mapPanY + imgY * mapZoom;
+            if (dotX >= mapX && dotX < mapX + mapW && dotY >= mapY && dotY < mapY + mapH) {
                 sg.setColor(new java.awt.Color(0xFF, 0xC8, 0x00));
                 sg.fillOval((int) dotX - 4, (int) dotY - 4, 8, 8);
                 sg.setColor(java.awt.Color.BLACK);
@@ -1750,15 +2405,13 @@ public final class GLRenderer implements TriangleRenderer {
         sg.setClip(prevClip);
 
         // Zoom buttons
-        int btnX = vx + vw - 20, btnY = vy + vh - 38;
+        int btnX = mapX + mapW - 20, btnY = mapY + mapH - 38;
         fillUiRect(btnX, btnY,      18, 17, 0xCC1B1B1B);
         fillUiRect(btnX, btnY + 19, 18, 17, 0xCC1B1B1B);
         drawUiText("+", btnX + 4, btnY + 2,      1, 0xFFDCDCDC);
         drawUiText("-", btnX + 5, btnY + 2 + 19, 1, 0xFFDCDCDC);
-        drawUiText("PLANE " + Math.max(0, Math.min(3, playerPlane)), vx + 8, vy + vh - 18, 0, 0xFF999999);
-        if (worldMapKeyVisible && worldMapFullscreen) {
-            drawWorldMapKeyOverlay(vx + 8, vy + 4, vh - 8);
-        }
+        drawUiText("PLANE " + Math.max(0, Math.min(3, playerPlane)), mapX + 8, mapY + mapH - 18, 0, 0xFF999999);
+        if (worldMapKeyFlashTicks > 0) worldMapKeyFlashTicks--;
     }
 
     private void drawLostHqPanel(int x) {
@@ -2969,6 +3622,10 @@ public final class GLRenderer implements TriangleRenderer {
     /** Reset all per-session XP counters. Called from the XP Tracker reset button. */
     public static void resetXpSession() {
         java.util.Arrays.fill(xpSessionGains, 0L);
+        java.util.Arrays.fill(xpSkillLastGainMs, 0L);
+        xpSessionStartMs   = 0L;
+        xpTrackerLastSkill  = -1;
+        xpTrackerLastGainMs = 0L;
     }
 
     private void fillUiRect(int x, int y, int width, int height, int argb) {
@@ -3165,12 +3822,304 @@ public final class GLRenderer implements TriangleRenderer {
         };
     }
 
+
+    public void setLoggedInUsername(String username) {
+        String clean = username == null ? "" : username.trim();
+        if (clean.equals(loggedInUsername)) return;
+        loggedInUsername = clean;
+        titleBarDirty = true;
+        if (window != NULL) {
+            glfwSetWindowTitle(window, titleBarText());
+        }
+    }
+
+    private String titleBarText() {
+        return loggedInUsername == null || loggedInUsername.isEmpty()
+                ? CLIENT_TITLE_BASE
+                : CLIENT_TITLE_BASE + " - " + loggedInUsername;
+    }
+
+    private int activeTitleBarHeight() {
+        return settingsFullscreen ? 0 : CLIENT_TITLE_BAR_H;
+    }
+
+    private int windowedLogicalHeight() {
+        return screenH + CLIENT_TITLE_BAR_H + RUNELITE_WINDOW_EXTRA_H;
+    }
+
+    private int contentWindowH() {
+        return Math.max(1, windowH - activeTitleBarHeight());
+    }
+
+    private int titleBarPhysicalH(int framebufferHeight) {
+        int titleH = activeTitleBarHeight();
+        if (titleH <= 0) return 0;
+        double scaleY = windowH > 0 ? (double) framebufferHeight / windowH : 1.0;
+        return Math.max(1, (int) Math.round(titleH * scaleY));
+    }
+
+    private int contentFramebufferH(int framebufferHeight) {
+        return Math.max(1, framebufferHeight - titleBarPhysicalH(framebufferHeight));
+    }
+
+    private int titleHitTest(double x) { return ClientTitleBar.hitTest(x, windowW); }
+
+    private boolean handleTitleBarMouseMove(double x, double y) {
+        if (activeTitleBarHeight() <= 0) return false;
+        if (titleDragging) {
+            int[] wx = new int[1], wy = new int[1];
+            glfwGetWindowPos(window, wx, wy);
+            glfwSetWindowPos(window, wx[0] + (int) Math.round(x) - titleDragOffsetX,
+                                      wy[0] + (int) Math.round(y) - titleDragOffsetY);
+            return true;
+        }
+        boolean inTitle = y >= 0 && y < CLIENT_TITLE_BAR_H;
+        int btn = inTitle ? titleHitTest(x) : ClientTitleBar.BTN_NONE;
+        boolean newClose = btn == ClientTitleBar.BTN_CLOSE,   newMin  = btn == ClientTitleBar.BTN_MINIMIZE,
+                newMax   = btn == ClientTitleBar.BTN_MAXIMIZE, newSide = btn == ClientTitleBar.BTN_SIDEBAR,
+                newDisc  = btn == ClientTitleBar.BTN_DISCORD;
+        if (newClose != titleCloseHover || newMin != titleMinimizeHover
+                || newMax != titleMaximizeHover || newSide != titleSidebarHover || newDisc != titleDiscordHover) {
+            titleCloseHover = newClose; titleMinimizeHover = newMin;
+            titleMaximizeHover = newMax; titleSidebarHover = newSide; titleDiscordHover = newDisc;
+            titleBarDirty = true;
+        }
+        return inTitle;
+    }
+
+    private boolean handleTitleBarMouseButton(int button, int action, double x, double y) {
+        if (activeTitleBarHeight() <= 0 || button != GLFW_MOUSE_BUTTON_LEFT) return false;
+        boolean inTitle = y >= 0 && y < CLIENT_TITLE_BAR_H;
+        if (action == GLFW_RELEASE) {
+            boolean wasDragging = titleDragging;
+            titleDragging = false;
+            return wasDragging || inTitle;
+        }
+        if (action != GLFW_PRESS || !inTitle) return false;
+        switch (titleHitTest(x)) {
+            case ClientTitleBar.BTN_CLOSE:    glfwSetWindowShouldClose(window, true); return true;
+            case ClientTitleBar.BTN_MINIMIZE: glfwIconifyWindow(window);              return true;
+            case ClientTitleBar.BTN_MAXIMIZE: glToggleMaximize();                     return true;
+            case ClientTitleBar.BTN_SIDEBAR:  glToggleSidebar();                      return true;
+            case ClientTitleBar.BTN_DISCORD:  glOpenDiscord();                        return true;
+        }
+        titleDragging = true;
+        titleDragOffsetX = (int) Math.round(x);
+        titleDragOffsetY = (int) Math.round(y);
+        return true;
+    }
+
+    /** Returns a bitmask of resize edges at logical cursor position (x,y). 1=left 2=right 8=bottom. */
+    private int glEdgeAt(double x, double y) {
+        if (settingsFullscreen) return 0;
+        int b = GL_RESIZE_BORDER;
+        int edge = 0;
+        if (x < b)             edge |= 1;
+        if (x >= windowW - b)  edge |= 2;
+        if (y >= windowH - b)  edge |= 8;
+        return edge;
+    }
+
+    private long glCursorFor(int edge) {
+        return switch (edge) {
+            case 1 | 8 -> glCursorNESW;
+            case 2 | 8 -> glCursorNWSE;
+            case 1, 2  -> glCursorHResize;
+            case 8     -> glCursorVResize;
+            default    -> NULL;
+        };
+    }
+
+    /** Draws the 5-px decorative border (1px white + 3px banner) on sides and bottom. */
+    private void drawWindowBorder() {
+        if (settingsFullscreen) return;
+        int[] fw = new int[1], fh = new int[1];
+        glfwGetFramebufferSize(window, fw, fh);
+        if (fw[0] <= 0 || fh[0] <= 0) return;
+        int titlePhysH = titleBarPhysicalH(fh[0]);
+        int contentH   = fh[0] - titlePhysH;
+        if (contentH <= 0) return;
+
+        glEnable(GL_SCISSOR_TEST);
+        glClearColor(CLIENT_TITLE_BG_R, CLIENT_TITLE_BG_G, CLIENT_TITLE_BG_B, 1f);
+        glScissor(0,          0, 4,       contentH); glClear(GL_COLOR_BUFFER_BIT); // left
+        glScissor(fw[0] - 4,  0, 4,       contentH); glClear(GL_COLOR_BUFFER_BIT); // right
+        glScissor(0,          0, fw[0],   4);         glClear(GL_COLOR_BUFFER_BIT); // bottom
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0f, 0f, 0f, 1f);  // restore black
+    }
+
+    private void drawClientTitleBar() {
+        if (activeTitleBarHeight() <= 0 || titleBarTex == 0 || window == NULL) return;
+
+        int logicalW = Math.max(1, windowW);
+        int logicalH = CLIENT_TITLE_BAR_H;
+        if (titleBarBuf == null || titleBarBufW != logicalW || titleBarBufH != logicalH) {
+            if (titleBarBuf != null) titleBarBuf.flush();
+            if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
+            titleBarBuf = new BufferedImage(logicalW, logicalH, BufferedImage.TYPE_INT_ARGB);
+            titleBarDirect = MemoryUtil.memAllocInt(logicalW * logicalH);
+            titleBarBufW = logicalW;
+            titleBarBufH = logicalH;
+            glBindTexture(GL_TEXTURE_2D, titleBarTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, logicalW, logicalH, 0,
+                    GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+            titleBarDirty = true;
+        }
+
+        if (titleBarDirty) {
+            java.awt.Graphics2D oldSg = sg;
+            sg = titleBarBuf.createGraphics();
+            try {
+                sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+                        java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                ClientTitleBar.paint(sg, logicalW, titleBarText(),
+                        titleCloseHover, titleMinimizeHover, titleMaximizeHover,
+                        titleSidebarHover, titleDiscordHover,
+                        glTitleMaximized, glSidebarOpen);
+            } finally {
+                sg.dispose();
+                sg = oldSg;
+            }
+
+            int[] pixels = ((java.awt.image.DataBufferInt)
+                    titleBarBuf.getRaster().getDataBuffer()).getData();
+            titleBarDirect.clear();
+            titleBarDirect.put(pixels);
+            titleBarDirect.flip();
+            glBindTexture(GL_TEXTURE_2D, titleBarTex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, logicalW, logicalH,
+                    GL_BGRA, GL_UNSIGNED_BYTE, titleBarDirect);
+            titleBarDirty = false;
+        }
+
+        int[] fw = new int[1], fh = new int[1];
+        glfwGetFramebufferSize(window, fw, fh);
+        int titlePhysH = titleBarPhysicalH(fh[0]);
+        if (titlePhysH <= 0) return;
+
+        glUseProgram(uiProg);
+        glUniform1i(uiTexLoc, 0);
+        glUniform1f(uiUMinLoc, 0f);
+        glUniform1f(uiUMaxLoc, 1f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, titleBarTex);
+        glBindVertexArray(uiQuadVao);
+        glViewport(0, fh[0] - titlePhysH, fw[0], titlePhysH);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindTexture(GL_TEXTURE_2D, uiTex);
+        glUseProgram(prog);
+        updateOutputViewport();
+    }
+
+
+    private long findWindowMonitor(int winCx, int winCy) {
+        org.lwjgl.PointerBuffer mons = glfwGetMonitors();
+        if (mons != null) {
+            int[] mx = new int[1], my = new int[1], mw = new int[1], mh = new int[1];
+            for (int i = 0; i < mons.limit(); i++) {
+                long m = mons.get(i);
+                glfwGetMonitorWorkarea(m, mx, my, mw, mh);
+                if (winCx >= mx[0] && winCx < mx[0] + mw[0]
+                        && winCy >= my[0] && winCy < my[0] + mh[0]) {
+                    return m;
+                }
+            }
+        }
+        return glfwGetPrimaryMonitor();
+    }
+
+    private void glToggleMaximize() {
+        if (glTitleMaximized) {
+            // Remove constraints first so the restored size is accepted, then
+            // atomically reposition+resize, then re-apply normal limits.
+            glfwSetWindowSizeLimits(window, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE);
+            glfwSetWindowAspectRatio(window, GLFW_DONT_CARE, GLFW_DONT_CARE);
+            glfwSetWindowMonitor(window, NULL, glSavedX, glSavedY, glSavedW, glSavedH, GLFW_DONT_CARE);
+            glTitleMaximized = false;
+            updateWindowSizeLimits();
+        } else {
+            int[] wx = new int[1], wy = new int[1];
+            glfwGetWindowPos(window, wx, wy);
+            glSavedX = wx[0]; glSavedY = wy[0];
+            glSavedW = windowW; glSavedH = windowH;
+            // Find the monitor whose work-area contains the window centre.
+            long mon = findWindowMonitor(wx[0] + windowW / 2, wy[0] + windowH / 2);
+            int[] mx = new int[1], my = new int[1], mw = new int[1], mh = new int[1];
+            glfwGetMonitorWorkarea(mon, mx, my, mw, mh);
+            // Drop aspect-ratio and size constraints before filling the monitor
+            // work area — the work area has a different ratio than the game canvas.
+            // Use glfwSetWindowMonitor for an atomic position+size change so the
+            // window manager cannot reposition the window between the two calls.
+            glfwSetWindowSizeLimits(window, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE);
+            glfwSetWindowAspectRatio(window, GLFW_DONT_CARE, GLFW_DONT_CARE);
+            glfwSetWindowMonitor(window, NULL, mx[0], my[0], mw[0], mh[0], GLFW_DONT_CARE);
+            // glfwSetWindowMonitor ignores x/y when already windowed — re-apply position explicitly.
+            glfwSetWindowPos(window, mx[0], my[0]);
+            glTitleMaximized = true;
+        }
+        titleBarDirty = true;
+    }
+
+    private void glToggleSidebar() {
+        glSidebarOpen = false;
+        sidebarOpen = false;
+        titleBarDirty = true;
+    }
+
+    private void glOpenDiscord() {
+        new Thread(() -> {
+            try {
+                java.awt.Desktop.getDesktop().browse(new java.net.URI("https://discord.gg/Uz3B8JJjEN"));
+            } catch (Exception e) {
+                System.err.println("[GL] Failed to open Discord: " + e);
+            }
+        }, "discord-link").start();
+    }
+
     // -------------------------------------------------------------------------
     // GLFW input → GameShell routing
     // -------------------------------------------------------------------------
 
     private void setupCallbacks() {
+        // Create resize cursors; diagonal types require GLFW 3.4 (fall back to H-resize if unavailable).
+        glCursorHResize = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
+        glCursorVResize = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
+        glCursorNWSE    = glfwCreateStandardCursor(0x00036007); // GLFW_RESIZE_NWSE_CURSOR
+        glCursorNESW    = glfwCreateStandardCursor(0x00036008); // GLFW_RESIZE_NESW_CURSOR
+        if (glCursorNWSE == NULL) glCursorNWSE = glCursorHResize;
+        if (glCursorNESW == NULL) glCursorNESW = glCursorHResize;
+
         glfwSetCursorPosCallback(window, (win, x, y) -> {
+            // Active resize drag: move/resize the window and absorb the event.
+            if (glResizeEdge != 0) {
+                int[] wx = new int[1], wy = new int[1];
+                glfwGetWindowPos(win, wx, wy);
+                double dx = (wx[0] + x) - glResizeCursorStartAbsX;
+                double dy = (wy[0] + y) - glResizeCursorStartAbsY;
+                int nx = glResizeWinStartX, ny = glResizeWinStartY;
+                int nw = glResizeWinStartW, nh = glResizeWinStartH;
+                int minW = outputW(), minH = windowedLogicalHeight();
+                if ((glResizeEdge & 2) != 0) nw = Math.max(minW, (int)(glResizeWinStartW + dx));
+                if ((glResizeEdge & 1) != 0) { nw = Math.max(minW, (int)(glResizeWinStartW - dx)); nx = glResizeWinStartX + glResizeWinStartW - nw; }
+                if ((glResizeEdge & 8) != 0) nh = Math.max(minH, (int)(glResizeWinStartH + dy));
+                glfwSetWindowPos(win, nx, ny);
+                glfwSetWindowSize(win, nw, nh);
+                if (shell != null) { shell.mouseX = -1; shell.mouseY = -1; }
+                return;
+            }
+            // Show resize cursor when hovering near an edge.
+            int edge = glEdgeAt(x, y);
+            glfwSetCursor(win, glCursorFor(edge));
+            if (edge != 0) {
+                if (shell != null) { shell.mouseX = -1; shell.mouseY = -1; }
+                return;
+            }
+            if (handleTitleBarMouseMove(x, y)) {
+                if (shell != null) { shell.mouseX = -1; shell.mouseY = -1; }
+                return;
+            }
             if (shell == null) return;
             shell.idleCycles = 0;
             int mouseX = worldMapFullscreen ? toFullscreenLogicalX(x) : toLogicalX(x);
@@ -3215,6 +4164,11 @@ public final class GLRenderer implements TriangleRenderer {
                 shell.mouseY = -1;
                 return;
             }
+            if (isWorldMapFloatingHit(mouseX, mouseY)) {
+                shell.mouseX = -1;
+                shell.mouseY = -1;
+                return;
+            }
             if (isSidebarX(mouseX)) {
                 shell.mouseX = -1;
                 shell.mouseY = -1;
@@ -3230,14 +4184,15 @@ public final class GLRenderer implements TriangleRenderer {
         });
 
         glfwSetScrollCallback(window, (win, xoff, yoff) -> {
-            if ((worldMapFullscreen || sidebarOpen && sidebarTab == 3) && worldMapLoaded
-                    && cursorX >= worldMapViewX() && cursorY >= worldMapViewY()) {
+            if ((worldMapFullscreen || worldMapFloating || sidebarOpen && sidebarTab == 3) && worldMapLoaded
+                    && cursorX >= worldMapMapX() && cursorX < worldMapMapX() + worldMapMapW()
+                    && cursorY >= worldMapMapY() && cursorY < worldMapMapY() + worldMapMapH()) {
                 float factor = (float) Math.pow(1.18, yoff);
                 float oldZoom = mapZoom;
                 mapZoom = Math.max(0.03f, Math.min(12f, mapZoom * factor));
                 float ratio = mapZoom / oldZoom;
-                float cx = cursorX - worldMapViewX();
-                float cy = cursorY - worldMapViewY();
+                float cx = cursorX - worldMapMapX();
+                float cy = cursorY - worldMapMapY();
                 mapPanX = cx - (cx - mapPanX) * ratio;
                 mapPanY = cy - (cy - mapPanY) * ratio;
             } else if (sidebarOpen && sidebarTab == 4 && isSkillCalcUri(lostHqPageUri)) {
@@ -3249,13 +4204,39 @@ public final class GLRenderer implements TriangleRenderer {
         });
 
         glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            double[] px = new double[1], py = new double[1];
+            glfwGetCursorPos(win, px, py);
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                if (action == GLFW_PRESS) {
+                    int edge = glEdgeAt(px[0], py[0]);
+                    if (edge != 0) {
+                        glResizeEdge = edge;
+                        int[] wx = new int[1], wy = new int[1];
+                        glfwGetWindowPos(win, wx, wy);
+                        glResizeCursorStartAbsX = wx[0] + px[0];
+                        glResizeCursorStartAbsY = wy[0] + py[0];
+                        glResizeWinStartX = wx[0];
+                        glResizeWinStartY = wy[0];
+                        glResizeWinStartW = windowW;
+                        glResizeWinStartH = windowH;
+                        if (shell != null) { shell.mouseButton = 0; shell.mouseX = -1; shell.mouseY = -1; }
+                        return;
+                    }
+                } else if (action == GLFW_RELEASE && glResizeEdge != 0) {
+                    glResizeEdge = 0;
+                    if (shell != null) { shell.mouseButton = 0; shell.mouseX = -1; shell.mouseY = -1; }
+                    return;
+                }
+            }
+            if (handleTitleBarMouseButton(button, action, px[0], py[0])) {
+                if (shell != null) { shell.mouseButton = 0; shell.mouseX = -1; shell.mouseY = -1; }
+                return;
+            }
             if (shell == null) return;
             shell.idleCycles = 0;
             if (action == GLFW_PRESS) {
                 // Re-query cursor position so coords are fresh even after a sidebar
                 // open/close changed the coordinate mapping since the last mousemove.
-                double[] px = new double[1], py = new double[1];
-                glfwGetCursorPos(win, px, py);
                 int lx = worldMapFullscreen ? toFullscreenLogicalX(px[0]) : toLogicalX(px[0]);
                 int ly = worldMapFullscreen ? toFullscreenLogicalY(py[0]) : toLogicalY(py[0]);
                 cursorX = lx;
@@ -3267,6 +4248,10 @@ public final class GLRenderer implements TriangleRenderer {
                     return;
                 }
                 if (worldMapFullscreen) {
+                    clickWorldMap(lx, ly);
+                    return;
+                }
+                if (isWorldMapFloatingHit(lx, ly)) {
                     clickWorldMap(lx, ly);
                     return;
                 }
@@ -3362,9 +4347,22 @@ public final class GLRenderer implements TriangleRenderer {
             if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) {
                 shiftKeyDown = action != GLFW_RELEASE;
             }
+            if (key == GLFW_KEY_F12 && action == GLFW_PRESS) {
+                com.gradwahl.rs254.gl.LiveTuner.toggle();
+                return;
+            }
             if (key == GLFW_KEY_GRAVE_ACCENT) {
                 if (action == GLFW_PRESS) statsOverlayVisible = !statsOverlayVisible;
                 return;
+            }
+            if (key == GLFW_KEY_H && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL) != 0) {
+                cycleHdDebugMode();
+                return;
+            }
+            if (key == GLFW_KEY_V && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL) != 0) {
+                if (pasteClipboardToShell(shell)) {
+                    return;
+                }
             }
             // Intercept keys for the native search panel
             if (lostHqSearchFocused && sidebarOpen && sidebarTab == 4
@@ -3448,8 +4446,29 @@ public final class GLRenderer implements TriangleRenderer {
         return (int) Math.round(x * screenW / Math.max(1, windowW));
     }
 
+    private static boolean pasteClipboardToShell(GameShell shell) {
+        if (shell == null) {
+            return false;
+        }
+        try {
+            String clip = (String) java.awt.Toolkit.getDefaultToolkit()
+                    .getSystemClipboard().getData(java.awt.datatransfer.DataFlavor.stringFlavor);
+            boolean pastedAny = false;
+            for (char c : clip.toCharArray()) {
+                if (c >= 32 && c <= 126) {
+                    shell.keyQueue[shell.keyQueueWritePos] = c;
+                    shell.keyQueueWritePos = (shell.keyQueueWritePos + 1) & 0x7F;
+                    pastedAny = true;
+                }
+            }
+            return pastedAny;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private int toFullscreenLogicalY(double y) {
-        return (int) Math.round(y * screenH / Math.max(1, windowH));
+        return (int) Math.round((y - activeTitleBarHeight()) * screenH / Math.max(1, contentWindowH()));
     }
 
     private void updateOutputViewport() {
@@ -3461,26 +4480,29 @@ public final class GLRenderer implements TriangleRenderer {
 
     private void updateOutputViewport(int width, int height) {
         if (width <= 0 || height <= 0) return;
+        int contentH = contentFramebufferH(height);
         if (sidebarInsideWindow()) {
-            double scale = insideGameScale(width, height);
+            double scale = insideGameScale(width, contentH);
             int gameW   = Math.max(1, (int) Math.round(screenW * scale));
             int gameH   = Math.max(1, (int) Math.round(screenH * scale));
             int gameX   = insideGameX(width, gameW);
-            int vertOff = (height - gameH) / 2;
+            int vertOff = (contentH - gameH) / 2;
             glViewport(gameX, vertOff, gameW, gameH);
         } else {
-            double scale  = (width > 0) ? (double) width / outputW() : 1.0;
+            double dpiScale = windowW > 0 ? (double) width / windowW : 1.0;
+            double scale    = Math.min(dpiScale, Math.min((double) width / outputW(), (double) contentH / screenH));
             int viewportW = Math.max(1, (int) Math.round(screenW * scale));
             int viewportH = Math.max(1, (int) Math.round(screenH * scale));
-            int vertOff   = height - viewportH;
-            glViewport(0, vertOff, viewportW, viewportH);
+            int horizOff  = (width - viewportW) / 2 + (int) Math.round((LiveTuner.canvasOffsetX + LiveTuner.viewportOffsetX) * dpiScale);
+            int vertOff   = contentH - viewportH - (int) Math.round((LiveTuner.canvasOffsetY + LiveTuner.viewportOffsetY) * dpiScale);
+            glViewport(horizOff, vertOff, viewportW, viewportH);
         }
     }
 
     private int toLogicalX(double x) {
         if (sidebarInsideWindow()) {
             int sidebarLogW = sidebarLogicalW();
-            double scale = insideGameScale(windowW, windowH);
+            double scale = insideGameScale(windowW, contentWindowH());
             double gamePhysW        = screenW * scale;
             double gamePhysStart    = insideGameX(windowW, gamePhysW);
             double sidebarPhysW     = insideSidebarW(windowW, gamePhysStart, gamePhysW,
@@ -3492,20 +4514,22 @@ public final class GLRenderer implements TriangleRenderer {
             }
             return (int) ((x - gamePhysStart) / scale);
         }
-        double scale = Math.min((double) windowW / outputW(), (double) windowH / screenH);
-        double left  = (windowW - outputW() * scale) / 2.0;
+        double scale     = Math.min(1.0, Math.min((double) windowW / outputW(), (double) contentWindowH() / screenH));
+        double gamePhysW = screenW * scale;
+        double left      = (windowW - gamePhysW) / 2.0 + LiveTuner.canvasOffsetX;
         return (int) ((x - left) / scale);
     }
 
     private int toLogicalY(double y) {
         double scale;
         if (sidebarInsideWindow()) {
-            scale = insideGameScale(windowW, windowH);
+            scale = insideGameScale(windowW, contentWindowH());
         } else {
-            scale = (windowW > 0) ? (double) windowW / outputW() : 1.0;
+            scale = Math.min(1.0, Math.min((double) windowW / outputW(), (double) contentWindowH() / screenH));
         }
-        double top = (windowH - screenH * scale) / 2.0;
-        return (int) ((y - top) / scale);
+        double contentY = y - activeTitleBarHeight();
+        double top = sidebarInsideWindow() ? (contentWindowH() - screenH * scale) / 2.0 : LiveTuner.canvasOffsetY;
+        return (int) ((contentY - top) / scale);
     }
 
     private double insideGameScale(double width, double height) {
@@ -3530,7 +4554,7 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private int outputW() {
-        return screenW + SIDEBAR_RAIL_W + (sidebarOpen ? SIDEBAR_PANEL_W : 0);
+        return screenW + RUNELITE_WINDOW_EXTRA_W;
     }
 
     private void updateWindowSizeLimits() {
@@ -3539,8 +4563,8 @@ public final class GLRenderer implements TriangleRenderer {
             glfwSetWindowSizeLimits(window, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE, GLFW_DONT_CARE);
             glfwSetWindowAspectRatio(window, GLFW_DONT_CARE, GLFW_DONT_CARE);
         } else {
-            glfwSetWindowSizeLimits(window, outputW(), screenH, GLFW_DONT_CARE, GLFW_DONT_CARE);
-            glfwSetWindowAspectRatio(window, outputW(), screenH);
+            glfwSetWindowSizeLimits(window, outputW(), windowedLogicalHeight(), GLFW_DONT_CARE, GLFW_DONT_CARE);
+            glfwSetWindowAspectRatio(window, outputW(), windowedLogicalHeight());
         }
     }
 
@@ -3548,13 +4572,16 @@ public final class GLRenderer implements TriangleRenderer {
         int[] width = new int[1];
         int[] height = new int[1];
         glfwGetFramebufferSize(window, width, height);
-        double scale = Math.min((double) width[0] / logicalWidth, (double) height[0] / screenH);
+        int contentH = contentFramebufferH(height[0]);
+        double scale = Math.min((double) width[0] / logicalWidth, (double) contentH / screenH);
         int viewportW = Math.max(1, (int) Math.round(logicalWidth * scale));
         int viewportH = Math.max(1, (int) Math.round(screenH * scale));
-        glViewport(viewportX(width[0], viewportW), (height[0] - viewportH) / 2, viewportW, viewportH);
+        glViewport(viewportX(width[0], viewportW), (contentH - viewportH) / 2, viewportW, viewportH);
     }
 
     private void clickSidebar(int x, int y) {
+        if (!customSidebarEnabled) return;
+
         int railX = sidebarRailX();
         if (x >= railX) {
             int tab;
@@ -3589,12 +4616,12 @@ public final class GLRenderer implements TriangleRenderer {
             return;
         }
         if (!sidebarOpen) return;
-        if (sidebarTab == 3 && y <= 42) {
+        if (sidebarTab == 3 && y < WORLD_MAP_HEADER_H) {
             clickWorldMap(x, y);
             return;
         }
         // Close button (top-right X in the panel header)
-        if (x >= sidebarPanelX() + sidebarPanelW() - 22 && y <= 42) {
+        if (x >= sidebarPanelX() + sidebarPanelW() - 22 && y < WORLD_MAP_HEADER_H) {
             sidebarOpen = false;
             updateWindowSizeLimits();
             resizeForSidebar();
@@ -3958,22 +4985,25 @@ public final class GLRenderer implements TriangleRenderer {
         int vy = worldMapViewY();
         int vw = worldMapViewW();
         int vh = worldMapViewH();
-        int right = vx + vw;
+        int headerY = worldMapHeaderY();
+        int mapX = worldMapMapX();
+        int mapY = worldMapMapY();
+        int mapW = worldMapMapW();
+        int mapH = worldMapMapH();
 
-        if (y <= 42) {
-            int keyX = right - (worldMapFullscreen ? 75 : 129);
-            if (x >= keyX && x < keyX + 29) {
-                worldMapKeyVisible = !worldMapKeyVisible;
-            } else if (!worldMapFullscreen && x >= right - 98 && x < right - 46) {
-                worldMapFollowing = !worldMapFollowing;
-                mapDragging = false;
-            } else if (x >= right - 44 && x < right - 24) {
-                worldMapFullscreen = !worldMapFullscreen;
-                mapZoom = -1;
-                mapDragging = false;
-                updateOutputViewport();
-            } else if (x >= right - 22 && x < right - 2) {
-                worldMapFullscreen = false;
+        if (y >= headerY && y < headerY + WORLD_MAP_HEADER_H) {
+            int closeX = vx + vw - 22;
+            if (x >= closeX && x < closeX + 20) {
+                if (worldMapFullscreen) {
+                    worldMapFullscreen = false;
+                    updateOutputViewport();
+                    return;
+                }
+                if (worldMapFloating) {
+                    worldMapFloating = false;
+                    updateOutputViewport();
+                    return;
+                }
                 sidebarOpen = false;
                 mapDragging = false;
                 updateWindowSizeLimits();
@@ -3983,34 +5013,35 @@ public final class GLRenderer implements TriangleRenderer {
             return;
         }
 
-        BufferedImage keyPage = worldMapKeyPages[worldMapKeyPage];
-        int overlayKeyHeight = Math.min(vh - 8, (keyPage != null ? keyPage.getHeight() : 434) + 26);
-        if (worldMapKeyVisible && (!worldMapFullscreen
-                || x < vx + 8 + worldMapKeyOverlayWidth() && y < vy + 4 + overlayKeyHeight)) {
-            int keyWidth = worldMapFullscreen ? worldMapKeyOverlayWidth() : vw;
-            int keyX = worldMapFullscreen ? vx + 8 : vx;
-            int keyY = worldMapFullscreen ? vy + 4 : vy;
-            int keyHeight = worldMapFullscreen
-                    ? overlayKeyHeight
-                    : vh;
-            if (y >= keyY + keyHeight - 24) {
-                if (x < keyX + keyWidth / 2) {
+        int keyW = worldMapKeyPanelWidth();
+        int rows = worldMapKeyRows(vh);
+        int maxPage = Math.max(0, (WORLD_MAP_KEY_NAMES.length - 1) / rows);
+        if (x >= vx && x < vx + keyW && y >= vy && y < vy + vh) {
+            int footerY = vy + vh - WORLD_MAP_KEY_FOOTER_H;
+            if (y >= footerY) {
+                if (x < vx + keyW / 2) {
                     worldMapKeyPage = Math.max(0, worldMapKeyPage - 1);
                 } else {
-                    worldMapKeyPage = Math.min(worldMapKeyPages.length - 1, worldMapKeyPage + 1);
+                    worldMapKeyPage = Math.min(maxPage, worldMapKeyPage + 1);
+                }
+            } else {
+                int keyIndex = worldMapKeyItemAt(x, y, vx, vy, vh);
+                if (keyIndex >= 0) {
+                    worldMapKeySelection = keyIndex;
+                    worldMapKeyFlashTicks = WORLD_MAP_KEY_FLASH_TICKS;
                 }
             }
             return;
         }
-        if (!worldMapLoaded || y < vy) return;
+        if (!worldMapLoaded || y < mapY || x < mapX || x >= mapX + mapW || y >= mapY + mapH) return;
 
-        int btnX = vx + vw - 20;
-        int btnY = vy + vh - 38;
+        int btnX = mapX + mapW - 20;
+        int btnY = mapY + mapH - 38;
         if (x >= btnX && x < btnX + 18 && y >= btnY && y < btnY + 17) {
-            zoomMapAround(1.4f, vx + vw / 2, vy + vh / 2);
+            zoomMapAround(1.4f, mapX + mapW / 2, mapY + mapH / 2);
         } else if (x >= btnX && x < btnX + 18 && y >= btnY + 19 && y < btnY + 36) {
-            zoomMapAround(1f / 1.4f, vx + vw / 2, vy + vh / 2);
-        } else if (!worldMapFollowing) {
+            zoomMapAround(1f / 1.4f, mapX + mapW / 2, mapY + mapH / 2);
+        } else {
             mapDragging = true;
             mapDragLastX = x;
             mapDragLastY = y;
@@ -4019,35 +5050,41 @@ public final class GLRenderer implements TriangleRenderer {
 
     private void toggleFullscreen() {
         settingsFullscreen = !settingsFullscreen;
+        long monitor = glfwGetPrimaryMonitor();
         if (settingsFullscreen) {
             updateWindowSizeLimits();
-            long monitor = glfwGetPrimaryMonitor();
             org.lwjgl.glfw.GLFWVidMode mode = glfwGetVideoMode(monitor);
             if (mode != null) {
                 glfwSetWindowMonitor(window, monitor, 0, 0,
                         mode.width(), mode.height(), mode.refreshRate());
             }
         } else {
-            glfwSetWindowMonitor(window, NULL, 100, 100, outputW(), screenH, GLFW_DONT_CARE);
+            int exitW = outputW(), exitH = windowedLogicalHeight();
+            int[] mx = new int[1], my = new int[1];
+            org.lwjgl.glfw.GLFWVidMode mode2 = glfwGetVideoMode(monitor);
+            glfwGetMonitorPos(monitor, mx, my);
+            int cx = (mode2 != null) ? mx[0] + (mode2.width()  - exitW) / 2 : 100;
+            int cy = (mode2 != null) ? my[0] + (mode2.height() - exitH) / 2 : 100;
+            glfwSetWindowMonitor(window, NULL, cx, cy, exitW, exitH, GLFW_DONT_CARE);
             updateWindowSizeLimits();
         }
         updateOutputViewport();
     }
 
     private boolean sidebarInsideWindow() {
-        return glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
+        return false;
     }
 
     private int sidebarPanelW() {
         if (!sidebarOpen || !sidebarInsideWindow()) return SIDEBAR_PANEL_W;
-        double scale = insideGameScale(windowW, windowH);
+        double scale = insideGameScale(windowW, contentWindowH());
         if (scale <= 0) return SIDEBAR_PANEL_W;
         int available = (int) Math.floor(windowW / scale) - screenW - SIDEBAR_RAIL_W;
         return Math.max(1, Math.min(SIDEBAR_PANEL_W, available));
     }
 
     private int sidebarLogicalW() {
-        return SIDEBAR_RAIL_W + (sidebarOpen ? sidebarPanelW() : 0);
+        return 0;
     }
 
     private double lostHqReaderScale() {
@@ -4063,13 +5100,12 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private boolean isSidebarX(int x) {
-        if (x >= sidebarRailX()) return true;
-        return sidebarOpen && x >= sidebarPanelX();
+        return false;
     }
 
     private void resizeForSidebar() {
         if (!sidebarInsideWindow()) {
-            glfwSetWindowSize(window, outputW(), screenH);
+            glfwSetWindowSize(window, outputW(), windowedLogicalHeight());
         }
         updateOutputViewport();
     }

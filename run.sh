@@ -58,9 +58,29 @@ if [ "$MISSING" -eq 1 ]; then
     REBUILD=1
 fi
 
+<<<<<<< Updated upstream
 if [ ! -f target/Progressive-Java-Client.jar ] || [ ! -f target/Progressive-Java-Updater.jar ] || [ "$REBUILD" -eq 1 ]; then
     bash build.sh
 fi
+=======
+case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+        APP_PATH="$SCRIPT_DIR/Exe Output/Progressive Java Client/Progressive Java Client.exe"
+        ;;
+    Darwin)
+        APP_PATH="$SCRIPT_DIR/Exe Output/Progressive Java Client.app/Contents/MacOS/Progressive Java Client"
+        ;;
+    Linux)
+        APP_PATH="$SCRIPT_DIR/Exe Output/Progressive Java Client/bin/Progressive Java Client"
+        ;;
+    *)
+        echo "ERROR: Unsupported OS: $OS" >&2
+        exit 1
+        ;;
+esac
+
+bash build.sh
+>>>>>>> Stashed changes
 
 mkdir -p "$SCRIPT_DIR/logs"
 

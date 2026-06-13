@@ -37,6 +37,26 @@ public class Model extends ModelSource {
 	private static int[] interpBaseAlpha = new int[2000];
 	public static boolean forceOpaqueFaceAlpha;
 
+	public interface HdModelSink {
+		default void beginModel(int yaw, int viewX, int viewY, int viewZ, int bitset) {
+		}
+
+		default void endModel() {
+		}
+
+		void addModelTriangle(int x0, int y0, int z0, int hsl0,
+				int x1, int y1, int z1, int hsl1,
+				int x2, int y2, int z2, int hsl2,
+				int trans);
+
+		void addTexturedModelTriangle(int x0, int y0, int z0, int light0, float u0, float v0,
+				int x1, int y1, int z1, int light1, float u1, float v1,
+				int x2, int y2, int z2, int light2, float u2, float v2,
+				int textureId, int trans);
+	}
+
+	public static HdModelSink hdModelSink;
+
 	@ObfuscatedName("fb.w")
 	public int vertexCount;
 
@@ -123,6 +143,10 @@ public class Model extends ModelSource {
 
 	@ObfuscatedName("fb.yb")
 	public static int[] clippedColour = new int[10];
+
+	private static int[] clippedViewSpaceX = new int[10];
+	private static int[] clippedViewSpaceY = new int[10];
+	private static int[] clippedViewSpaceZ = new int[10];
 
 	@ObfuscatedName("fb.zb")
 	public static int oX;
@@ -349,7 +373,7 @@ public class Model extends ModelSource {
 
 	@ObfuscatedName("fb.a(II)Lfb;")
 	public static Model load(int arg1) {
-		if (meta == null) {
+		if (meta == null || arg1 < 0 || arg1 >= meta.length) {
 			return null;
 		}
 		Metadata var2 = meta[arg1];
@@ -363,7 +387,7 @@ public class Model extends ModelSource {
 
 	@ObfuscatedName("fb.c(I)Z")
 	public static boolean requestDownload(int arg0) {
-		if (meta == null) {
+		if (meta == null || arg0 < 0 || arg0 >= meta.length) {
 			return false;
 		}
 		Metadata var1 = meta[arg0];
@@ -1540,6 +1564,139 @@ public class Model extends ModelSource {
 		return (arg0 & 0xFF80) + var4;
 	}
 
+	private static int hdTextureFallbackHsl(int textureId, int lightness) {
+		if (textureId < 0 || textureId >= World.TEXTURE_HSL.length) {
+			return lightness;
+		}
+		int base = World.TEXTURE_HSL[textureId];
+		int var4 = 127 - lightness;
+		int var5 = var4 * (base & 0x7F) / 160;
+		if (var5 < 2) {
+			var5 = 2;
+		} else if (var5 > 126) {
+			var5 = 126;
+		}
+		return (base & 0xFF80) + var5;
+	}
+
+	private static float hdTextureU(int screenX, int screenY,
+			int tx0, int tx1, int tx2, int ty0, int ty1, int ty2, int tz0, int tz1, int tz2) {
+		int dX01 = tx0 - tx1;
+		int dX20 = tx2 - tx0;
+		int dY01 = ty0 - ty1;
+		int dY20 = ty2 - ty0;
+		int dZ01 = tz0 - tz1;
+		int dZ20 = tz2 - tz0;
+		long uA = ((long) dX20 * ty0 - (long) dY20 * tx0) << 14;
+		long uB = ((long) dY20 * tz0 - (long) dZ20 * ty0) << 8;
+		long uC = ((long) dZ20 * tx0 - (long) dX20 * tz0) << 5;
+		long wA = ((long) dY01 * dX20 - (long) dX01 * dY20) << 14;
+		long wB = ((long) dZ01 * dY20 - (long) dY01 * dZ20) << 8;
+		long wC = ((long) dX01 * dZ20 - (long) dZ01 * dX20) << 5;
+		int dx = screenX - Pix3D.projectionX;
+		int dy = screenY - Pix3D.projectionY;
+		long u = uA + uC * dy + (uB >> 3) * dx;
+		long w = wA + wC * dy + (wB >> 3) * dx;
+		return w != 0 ? (float) u / w : 0.0F;
+	}
+
+	private static float hdTextureV(int screenX, int screenY,
+			int tx0, int tx1, int tx2, int ty0, int ty1, int ty2, int tz0, int tz1, int tz2) {
+		int dX01 = tx0 - tx1;
+		int dX20 = tx2 - tx0;
+		int dY01 = ty0 - ty1;
+		int dY20 = ty2 - ty0;
+		int dZ01 = tz0 - tz1;
+		int dZ20 = tz2 - tz0;
+		long vA = ((long) dX01 * ty0 - (long) dY01 * tx0) << 14;
+		long vB = ((long) dY01 * tz0 - (long) dZ01 * ty0) << 8;
+		long vC = ((long) dZ01 * tx0 - (long) dX01 * tz0) << 5;
+		long wA = ((long) dY01 * dX20 - (long) dX01 * dY20) << 14;
+		long wB = ((long) dZ01 * dY20 - (long) dY01 * dZ20) << 8;
+		long wC = ((long) dX01 * dZ20 - (long) dZ01 * dX20) << 5;
+		int dx = screenX - Pix3D.projectionX;
+		int dy = screenY - Pix3D.projectionY;
+		long v = vA + vC * dy + (vB >> 3) * dx;
+		long w = wA + wC * dy + (wB >> 3) * dx;
+		return w != 0 ? (float) v / w : 0.0F;
+	}
+
+	private void captureHdTexturedTriangle(int face, int a, int b, int c,
+			int sx0, int sy0, int sx1, int sy1, int sx2, int sy2,
+			int vx0, int vy0, int vz0, int light0,
+			int vx1, int vy1, int vz1, int light1,
+			int vx2, int vy2, int vz2, int light2) {
+		int texAxis = this.faceInfo[face] >> 2;
+		int ta = this.texturedVertexA[texAxis];
+		int tb = this.texturedVertexB[texAxis];
+		int tc = this.texturedVertexC[texAxis];
+		int tx0 = vertexViewSpaceX[ta];
+		int tx1 = vertexViewSpaceX[tb];
+		int tx2 = vertexViewSpaceX[tc];
+		int ty0 = vertexViewSpaceY[ta];
+		int ty1 = vertexViewSpaceY[tb];
+		int ty2 = vertexViewSpaceY[tc];
+		int tz0 = vertexViewSpaceZ[ta];
+		int tz1 = vertexViewSpaceZ[tb];
+		int tz2 = vertexViewSpaceZ[tc];
+		hdModelSink.addTexturedModelTriangle(
+				vx0, vy0, vz0, light0,
+				hdTextureU(sx0, sy0, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				hdTextureV(sx0, sy0, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				vx1, vy1, vz1, light1,
+				hdTextureU(sx1, sy1, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				hdTextureV(sx1, sy1, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				vx2, vy2, vz2, light2,
+				hdTextureU(sx2, sy2, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				hdTextureV(sx2, sy2, tx0, tx1, tx2, ty0, ty1, ty2, tz0, tz1, tz2),
+				this.faceColour[face], Pix3D.trans);
+	}
+
+	private void captureHdClippedTriangle(int face, int type, int a, int b, int c) {
+		if (type == 2) {
+			this.captureHdTexturedTriangle(face, a, b, c,
+					clippedX[a], clippedY[a], clippedX[b], clippedY[b], clippedX[c], clippedY[c],
+					clippedViewSpaceX[a], clippedViewSpaceY[a], clippedViewSpaceZ[a], clippedColour[a],
+					clippedViewSpaceX[b], clippedViewSpaceY[b], clippedViewSpaceZ[b], clippedColour[b],
+					clippedViewSpaceX[c], clippedViewSpaceY[c], clippedViewSpaceZ[c], clippedColour[c]);
+			return;
+		}
+		if (type == 3) {
+			this.captureHdTexturedTriangle(face, a, b, c,
+					clippedX[a], clippedY[a], clippedX[b], clippedY[b], clippedX[c], clippedY[c],
+					clippedViewSpaceX[a], clippedViewSpaceY[a], clippedViewSpaceZ[a], this.faceColourA[face],
+					clippedViewSpaceX[b], clippedViewSpaceY[b], clippedViewSpaceZ[b], this.faceColourA[face],
+					clippedViewSpaceX[c], clippedViewSpaceY[c], clippedViewSpaceZ[c], this.faceColourA[face]);
+			return;
+		}
+		int ca;
+		int cb;
+		int cc;
+		if (type == 0) {
+			ca = clippedColour[a];
+			cb = clippedColour[b];
+			cc = clippedColour[c];
+		} else if (type == 2) {
+			ca = hdTextureFallbackHsl(this.faceColour[face], clippedColour[a]);
+			cb = hdTextureFallbackHsl(this.faceColour[face], clippedColour[b]);
+			cc = hdTextureFallbackHsl(this.faceColour[face], clippedColour[c]);
+		} else if (type == 3) {
+			int hsl = hdTextureFallbackHsl(this.faceColour[face], this.faceColourA[face]);
+			ca = hsl;
+			cb = hsl;
+			cc = hsl;
+		} else {
+			ca = this.faceColourA[face];
+			cb = ca;
+			cc = ca;
+		}
+		hdModelSink.addModelTriangle(
+				clippedViewSpaceX[a], clippedViewSpaceY[a], clippedViewSpaceZ[a], ca,
+				clippedViewSpaceX[b], clippedViewSpaceY[b], clippedViewSpaceZ[b], cb,
+				clippedViewSpaceX[c], clippedViewSpaceY[c], clippedViewSpaceZ[c], cc,
+				Pix3D.trans);
+	}
+
 	@ObfuscatedName("fb.a(IIIIIII)V")
 	public void objRender(int arg0, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6) {
 		int var8 = Pix3D.projectionX;
@@ -1692,15 +1849,22 @@ public class Model extends ModelSource {
 				vertexScreenX[var36] = -5000;
 				var23 = true;
 			}
-			if (var23 || this.texturedFaceCount > 0) {
+			if (var23 || this.texturedFaceCount > 0 || hdModelSink != null) {
 				vertexViewSpaceX[var36] = var44;
 				vertexViewSpaceY[var36] = var47;
 				vertexViewSpaceZ[var36] = var48;
 			}
 		}
 		try {
+			if (hdModelSink != null) {
+				hdModelSink.beginModel(arg0, arg5, arg6, arg7, arg8);
+			}
 			this.render2(var23, var24, arg8);
 		} catch (Exception var50) {
+		} finally {
+			if (hdModelSink != null) {
+				hdModelSink.endModel();
+			}
 		}
 	}
 
@@ -1891,6 +2055,33 @@ public class Model extends ModelSource {
 		} else {
 			var5 = this.faceInfo[arg0] & 0x3;
 		}
+		if (hdModelSink != null) {
+			if (var5 == 0) {
+				hdModelSink.addModelTriangle(
+						vertexViewSpaceX[var2], vertexViewSpaceY[var2], vertexViewSpaceZ[var2], this.faceColourA[arg0],
+						vertexViewSpaceX[var3], vertexViewSpaceY[var3], vertexViewSpaceZ[var3], this.faceColourB[arg0],
+						vertexViewSpaceX[var4], vertexViewSpaceY[var4], vertexViewSpaceZ[var4], this.faceColourC[arg0],
+						Pix3D.trans);
+			} else if (var5 == 2) {
+				this.captureHdTexturedTriangle(arg0, var2, var3, var4,
+						vertexScreenX[var2], vertexScreenY[var2], vertexScreenX[var3], vertexScreenY[var3], vertexScreenX[var4], vertexScreenY[var4],
+						vertexViewSpaceX[var2], vertexViewSpaceY[var2], vertexViewSpaceZ[var2], this.faceColourA[arg0],
+						vertexViewSpaceX[var3], vertexViewSpaceY[var3], vertexViewSpaceZ[var3], this.faceColourB[arg0],
+						vertexViewSpaceX[var4], vertexViewSpaceY[var4], vertexViewSpaceZ[var4], this.faceColourC[arg0]);
+			} else if (var5 == 3) {
+				this.captureHdTexturedTriangle(arg0, var2, var3, var4,
+						vertexScreenX[var2], vertexScreenY[var2], vertexScreenX[var3], vertexScreenY[var3], vertexScreenX[var4], vertexScreenY[var4],
+						vertexViewSpaceX[var2], vertexViewSpaceY[var2], vertexViewSpaceZ[var2], this.faceColourA[arg0],
+						vertexViewSpaceX[var3], vertexViewSpaceY[var3], vertexViewSpaceZ[var3], this.faceColourA[arg0],
+						vertexViewSpaceX[var4], vertexViewSpaceY[var4], vertexViewSpaceZ[var4], this.faceColourA[arg0]);
+			} else {
+				hdModelSink.addModelTriangle(
+						vertexViewSpaceX[var2], vertexViewSpaceY[var2], vertexViewSpaceZ[var2], this.faceColourA[arg0],
+						vertexViewSpaceX[var3], vertexViewSpaceY[var3], vertexViewSpaceZ[var3], this.faceColourA[arg0],
+						vertexViewSpaceX[var4], vertexViewSpaceY[var4], vertexViewSpaceZ[var4], this.faceColourA[arg0],
+						Pix3D.trans);
+			}
+		}
 		if (var5 == 0) {
 			Pix3D.gouraudTriangle(vertexScreenY[var2], vertexScreenY[var3], vertexScreenY[var4], vertexScreenX[var2], vertexScreenX[var3], vertexScreenX[var4], this.faceColourA[arg0], this.faceColourB[arg0], this.faceColourC[arg0]);
 		} else if (var5 == 1) {
@@ -1924,6 +2115,9 @@ public class Model extends ModelSource {
 		if (var8 >= 50) {
 			clippedX[var4] = vertexScreenX[var5];
 			clippedY[var4] = vertexScreenY[var5];
+			clippedViewSpaceX[var4] = vertexViewSpaceX[var5];
+			clippedViewSpaceY[var4] = vertexViewSpaceY[var5];
+			clippedViewSpaceZ[var4] = vertexViewSpaceZ[var5];
 			clippedColour[var4++] = this.faceColourA[arg0];
 		} else {
 			int var11 = vertexViewSpaceX[var5];
@@ -1931,20 +2125,33 @@ public class Model extends ModelSource {
 			int var13 = this.faceColourA[arg0];
 			if (var10 >= 50) {
 				int var14 = (50 - var8) * divTable2[var10 - var8];
-				clippedX[var4] = var2 + (var11 + ((vertexViewSpaceX[var7] - var11) * var14 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var12 + ((vertexViewSpaceY[var7] - var12) * var14 >> 16) << 9) / 50;
+				int var15 = var11 + ((vertexViewSpaceX[var7] - var11) * var14 >> 16);
+				int var16 = var12 + ((vertexViewSpaceY[var7] - var12) * var14 >> 16);
+				clippedX[var4] = var2 + (var15 << 9) / 50;
+				clippedY[var4] = var3 + (var16 << 9) / 50;
+				clippedViewSpaceX[var4] = var15;
+				clippedViewSpaceY[var4] = var16;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var13 + ((this.faceColourC[arg0] - var13) * var14 >> 16);
 			}
 			if (var9 >= 50) {
 				int var15 = (50 - var8) * divTable2[var9 - var8];
-				clippedX[var4] = var2 + (var11 + ((vertexViewSpaceX[var6] - var11) * var15 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var12 + ((vertexViewSpaceY[var6] - var12) * var15 >> 16) << 9) / 50;
+				int var16 = var11 + ((vertexViewSpaceX[var6] - var11) * var15 >> 16);
+				int var17 = var12 + ((vertexViewSpaceY[var6] - var12) * var15 >> 16);
+				clippedX[var4] = var2 + (var16 << 9) / 50;
+				clippedY[var4] = var3 + (var17 << 9) / 50;
+				clippedViewSpaceX[var4] = var16;
+				clippedViewSpaceY[var4] = var17;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var13 + ((this.faceColourB[arg0] - var13) * var15 >> 16);
 			}
 		}
 		if (var9 >= 50) {
 			clippedX[var4] = vertexScreenX[var6];
 			clippedY[var4] = vertexScreenY[var6];
+			clippedViewSpaceX[var4] = vertexViewSpaceX[var6];
+			clippedViewSpaceY[var4] = vertexViewSpaceY[var6];
+			clippedViewSpaceZ[var4] = vertexViewSpaceZ[var6];
 			clippedColour[var4++] = this.faceColourB[arg0];
 		} else {
 			int var16 = vertexViewSpaceX[var6];
@@ -1952,20 +2159,33 @@ public class Model extends ModelSource {
 			int var18 = this.faceColourB[arg0];
 			if (var8 >= 50) {
 				int var19 = (50 - var9) * divTable2[var8 - var9];
-				clippedX[var4] = var2 + (var16 + ((vertexViewSpaceX[var5] - var16) * var19 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var17 + ((vertexViewSpaceY[var5] - var17) * var19 >> 16) << 9) / 50;
+				int var20 = var16 + ((vertexViewSpaceX[var5] - var16) * var19 >> 16);
+				int var21 = var17 + ((vertexViewSpaceY[var5] - var17) * var19 >> 16);
+				clippedX[var4] = var2 + (var20 << 9) / 50;
+				clippedY[var4] = var3 + (var21 << 9) / 50;
+				clippedViewSpaceX[var4] = var20;
+				clippedViewSpaceY[var4] = var21;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var18 + ((this.faceColourA[arg0] - var18) * var19 >> 16);
 			}
 			if (var10 >= 50) {
 				int var20 = (50 - var9) * divTable2[var10 - var9];
-				clippedX[var4] = var2 + (var16 + ((vertexViewSpaceX[var7] - var16) * var20 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var17 + ((vertexViewSpaceY[var7] - var17) * var20 >> 16) << 9) / 50;
+				int var21 = var16 + ((vertexViewSpaceX[var7] - var16) * var20 >> 16);
+				int var22 = var17 + ((vertexViewSpaceY[var7] - var17) * var20 >> 16);
+				clippedX[var4] = var2 + (var21 << 9) / 50;
+				clippedY[var4] = var3 + (var22 << 9) / 50;
+				clippedViewSpaceX[var4] = var21;
+				clippedViewSpaceY[var4] = var22;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var18 + ((this.faceColourC[arg0] - var18) * var20 >> 16);
 			}
 		}
 		if (var10 >= 50) {
 			clippedX[var4] = vertexScreenX[var7];
 			clippedY[var4] = vertexScreenY[var7];
+			clippedViewSpaceX[var4] = vertexViewSpaceX[var7];
+			clippedViewSpaceY[var4] = vertexViewSpaceY[var7];
+			clippedViewSpaceZ[var4] = vertexViewSpaceZ[var7];
 			clippedColour[var4++] = this.faceColourC[arg0];
 		} else {
 			int var21 = vertexViewSpaceX[var7];
@@ -1973,14 +2193,24 @@ public class Model extends ModelSource {
 			int var23 = this.faceColourC[arg0];
 			if (var9 >= 50) {
 				int var24 = (50 - var10) * divTable2[var9 - var10];
-				clippedX[var4] = var2 + (var21 + ((vertexViewSpaceX[var6] - var21) * var24 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var22 + ((vertexViewSpaceY[var6] - var22) * var24 >> 16) << 9) / 50;
+				int var25 = var21 + ((vertexViewSpaceX[var6] - var21) * var24 >> 16);
+				int var26 = var22 + ((vertexViewSpaceY[var6] - var22) * var24 >> 16);
+				clippedX[var4] = var2 + (var25 << 9) / 50;
+				clippedY[var4] = var3 + (var26 << 9) / 50;
+				clippedViewSpaceX[var4] = var25;
+				clippedViewSpaceY[var4] = var26;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var23 + ((this.faceColourB[arg0] - var23) * var24 >> 16);
 			}
 			if (var8 >= 50) {
 				int var25 = (50 - var10) * divTable2[var8 - var10];
-				clippedX[var4] = var2 + (var21 + ((vertexViewSpaceX[var5] - var21) * var25 >> 16) << 9) / 50;
-				clippedY[var4] = var3 + (var22 + ((vertexViewSpaceY[var5] - var22) * var25 >> 16) << 9) / 50;
+				int var26 = var21 + ((vertexViewSpaceX[var5] - var21) * var25 >> 16);
+				int var27 = var22 + ((vertexViewSpaceY[var5] - var22) * var25 >> 16);
+				clippedX[var4] = var2 + (var26 << 9) / 50;
+				clippedY[var4] = var3 + (var27 << 9) / 50;
+				clippedViewSpaceX[var4] = var26;
+				clippedViewSpaceY[var4] = var27;
+				clippedViewSpaceZ[var4] = 50;
 				clippedColour[var4++] = var23 + ((this.faceColourA[arg0] - var23) * var25 >> 16);
 			}
 		}
@@ -2007,6 +2237,9 @@ public class Model extends ModelSource {
 				var32 = 0;
 			} else {
 				var32 = this.faceInfo[arg0] & 0x3;
+			}
+			if (hdModelSink != null) {
+				this.captureHdClippedTriangle(arg0, var32, 0, 1, 2);
 			}
 			if (var32 == 0) {
 				Pix3D.gouraudTriangle(var29, var30, var31, var26, var27, var28, clippedColour[0], clippedColour[1], clippedColour[2]);
@@ -2037,6 +2270,10 @@ public class Model extends ModelSource {
 			var41 = 0;
 		} else {
 			var41 = this.faceInfo[arg0] & 0x3;
+		}
+		if (hdModelSink != null) {
+			this.captureHdClippedTriangle(arg0, var41, 0, 1, 2);
+			this.captureHdClippedTriangle(arg0, var41, 0, 2, 3);
 		}
 		if (var41 == 0) {
 			Pix3D.gouraudTriangle(var29, var30, var31, var26, var27, var28, clippedColour[0], clippedColour[1], clippedColour[2]);

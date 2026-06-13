@@ -39,3 +39,14 @@ Not implemented yet:
 
 ```bash
 mvn package
+<<<<<<< Updated upstream
+=======
+```
+
+`run.ps1` and `build.ps1` now auto-sync the client cache from the newest nearby server `engine/data/pack` before packaging, so the built JAR ships with the latest server cache files instead of whatever was left in the client `cache` folder.
+
+If your server cache lives outside the nearby project folders, set `RS254_SERVER_CACHE_DIR` to that `engine/data/pack` directory before building or launching.
+
+`build.ps1` also bakes the skillcape model and emote data directly into the cache before packaging. Set `RS254_SKILLCAPE_EMOTE_PACK_DIR` if your `skillcape_emote_pack_b238` folder lives outside the default nearby locations.
+
+>>>>>>> Stashed changes
