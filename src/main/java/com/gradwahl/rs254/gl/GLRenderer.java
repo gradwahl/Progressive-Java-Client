@@ -287,6 +287,12 @@ public final class GLRenderer implements TriangleRenderer {
         "Fletching", "Fishing",  "Firemaking", "Crafting", "Smithing",
         "Mining",    "Herblore", "Agility",    "Thieving", "Runecrafting"
     };
+    private static final String[] HSCORE_SKILL_SHORT = {
+        "Overall", "Att",   "Def",   "Str",   "Hit",
+        "Rng",     "Pray",  "Mag",   "Cook",  "Wood",
+        "Flet",    "Fish",  "Fire",  "Craft", "Smith",
+        "Mine",    "Herb",  "Agil",  "Thiev", "Rune"
+    };
     private static final int HSCORE_SKILL_COLUMNS = 3;
 
     // LostHQ toolkit destinations, kept in the same order as the website menu.
@@ -504,7 +510,8 @@ public final class GLRenderer implements TriangleRenderer {
     private boolean sidebarGpuEnabled   = true;
     private boolean sidebarFpsEnabled   = SETTINGS_PREFS.getBoolean("fps60", false);
     private boolean sidebarRoofsEnabled = true;
-    private boolean settingsFullscreen  = false;
+    private boolean settingsFullscreen      = false;
+    private boolean preFullscreenMaximized  = false;
     private boolean settingsAfkDropdownOpen;
     private int     settingsAfkIndex    = SETTINGS_PREFS.getInt("afkIndex", 0);
     private final String clientVersionText = "Version: " + ClientConfig.currentVersionLabel();
@@ -860,12 +867,12 @@ public final class GLRenderer implements TriangleRenderer {
             return;
         }
         flushBatch();
+        drawUIOverlay();
         if (restoreCooldownFrames > 0) {
             restoreCooldownFrames--;
             glfwSwapBuffers(window);
             return;
         }
-        drawUIOverlay();
         sampledFrames++;
         updateMetrics();
         drawStatsOverlay();
@@ -1184,7 +1191,7 @@ public final class GLRenderer implements TriangleRenderer {
             int gameW      = Math.max(1, (int) Math.round(screenW    * scale));
             int gameH      = Math.max(1, (int) Math.round(screenH    * scale));
             int sidebarW   = Math.max(1, (int) Math.round(sidebarLogW * scale));
-            // Top-align: if the window is taller than content, spare space goes below
+            // Top-align: spare space goes below the content
             int vertOff    = fh[0] - gameH;
 
             glUniform1f(uiUMinLoc, 0f);
@@ -1221,8 +1228,12 @@ public final class GLRenderer implements TriangleRenderer {
                                 java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             sg.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
                                 java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+            sg.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
+                                java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
             sg.setRenderingHint(java.awt.RenderingHints.KEY_FRACTIONALMETRICS,
-                                java.awt.RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+                                java.awt.RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
+            sg.setRenderingHint(java.awt.RenderingHints.KEY_STROKE_CONTROL,
+                                java.awt.RenderingHints.VALUE_STROKE_NORMALIZE);
             sg.setBackground(new java.awt.Color(0, 0, 0, 0));
             sg.clearRect(0, 0, physW, physH);
             // Map the visible logical sidebar slice to physical pixels. In maximized
@@ -1452,7 +1463,8 @@ public final class GLRenderer implements TriangleRenderer {
             if (sidebarTab == 3) {
                 drawUiTextVerticallyCentered(sidebarTitle(), panelX + 4, 11, 20, 0, 0xFFDCDCDC);
             } else {
-                drawUiText(sidebarTitle(), panelX + 12, 17, 2, 0xFFDCDCDC);
+                // Reserve 28px on the right for the close button
+                drawUiTextFittedFull(sidebarTitle(), panelX + 12, 17, panelW - 40, 2, 0xFFDCDCDC);
             }
             if (sidebarTab == 3) drawWorldMapHeaderControls(panelX, panelW);
             drawSidebarHeaderCloseButton(panelX + panelW);
@@ -1517,6 +1529,7 @@ public final class GLRenderer implements TriangleRenderer {
         int columns = HSCORE_SKILL_COLUMNS;
         int buttonW = (panelW - 20 - (columns - 1) * 4) / columns;
         int buttonRows = (HSCORE_SKILL_LABEL.length + columns - 1) / columns;
+        boolean narrowButtons = panelW < 200;
         for (int i = 0; i < HSCORE_SKILL_LABEL.length; i++) {
             int col = i % columns;
             int row = i / columns;
@@ -1525,18 +1538,22 @@ public final class GLRenderer implements TriangleRenderer {
             boolean sel = (i == hiscoresSkill);
             fillUiRect(bx, by, buttonW, 11, sel ? 0xFF3F3523 : 0xFF2A2A2A);
             if (sel) fillUiRect(bx, by, buttonW, 1, 0xFFE89E14);
-            drawUiTextFittedFull(HSCORE_SKILL_LABEL[i], bx + 4, by + 2,
+            String label = narrowButtons ? HSCORE_SKILL_SHORT[i] : HSCORE_SKILL_LABEL[i];
+            drawUiTextFittedFull(label, bx + 4, by + 2,
                     buttonW - 8, 0, sel ? 0xFFE89E14 : 0xFF999999);
         }
 
         int afterButtons = 52 + buttonRows * 13 + 3;
         fillUiRect(x + 10, afterButtons, panelW - 20, 1, 0xFF363636);
 
-        // Column headers
-        int headerY = afterButtons + 5;
-        drawUiText("RK",   x + 10,  headerY, 1, 0xFF666666);
-        drawUiText("NAME", x + 28,  headerY, 1, 0xFF666666);
-        drawUiText("LVL",  x + 140, headerY, 1, 0xFF666666);
+        // Column headers — LVL is right-anchored so both columns stay within any panel width
+        int headerY  = afterButtons + 5;
+        int lvlColX  = x + panelW - 30;
+        int nameColX = x + 28;
+        int nameMaxW = Math.max(1, lvlColX - nameColX - 6);
+        drawUiText("RK",   x + 10,   headerY, 1, 0xFF666666);
+        drawUiText("NAME", nameColX, headerY, 1, 0xFF666666);
+        drawUiText("LVL",  lvlColX,  headerY, 1, 0xFF666666);
         fillUiRect(x + 10, headerY + 15, panelW - 20, 1, 0xFF363636);
 
         // Leaderboard rows
@@ -1552,9 +1569,8 @@ public final class GLRenderer implements TriangleRenderer {
                 int col = (i == 0) ? 0xFFFFD700 : 0xFFDCDCDC;
                 drawUiText(String.valueOf(i + 1), x + 10, rowY, 1, col);
                 String name = names[i].toUpperCase();
-                if (name.length() > 14) name = name.substring(0, 14);
-                drawUiText(name, x + 28, rowY, 1, col);
-                drawUiText(String.valueOf(levels[i]), x + 140, rowY, 1, col);
+                drawUiTextFitted(name, nameColX, rowY, nameMaxW, 1, col);
+                drawUiText(String.valueOf(levels[i]), lvlColX, rowY, 1, col);
                 rowY += 12;
             }
         }
@@ -1562,12 +1578,13 @@ public final class GLRenderer implements TriangleRenderer {
 
     private void drawXpScreenPanel(int x) {
         int panelW = sidebarPanelW();
-        drawUiText("SHOW XP GAINS", x + 16, 56, 1, 0xFFE89E14);
-        fillUiRect(x + 16, 70, panelW - 32, 1, 0xFF363636);
-        drawUiText("DISPLAYS FLOATING XP", x + 16, 86, 1, 0xFF999999);
-        drawUiText("TEXT ON SCREEN WHEN", x + 16, 100, 1, 0xFF999999);
-        drawUiText("EXPERIENCE IS GAINED.", x + 16, 114, 1, 0xFF999999);
-        fillUiRect(x + 16, 130, panelW - 32, 1, 0xFF363636);
+        int maxW   = panelW - 32;
+        drawUiTextFittedFull("SHOW XP GAINS", x + 16, 56, maxW, 1, 0xFFE89E14);
+        fillUiRect(x + 16, 70, maxW, 1, 0xFF363636);
+        drawUiTextFittedFull("DISPLAYS FLOATING XP",  x + 16, 86,  maxW, 1, 0xFF999999);
+        drawUiTextFittedFull("TEXT ON SCREEN WHEN",   x + 16, 100, maxW, 1, 0xFF999999);
+        drawUiTextFittedFull("EXPERIENCE IS GAINED.", x + 16, 114, maxW, 1, 0xFF999999);
+        fillUiRect(x + 16, 130, maxW, 1, 0xFF363636);
         drawToggleRow(x, 140, "XP ON SCREEN", xpScreenEnabled);
     }
 
@@ -1581,22 +1598,24 @@ public final class GLRenderer implements TriangleRenderer {
         fillUiRect(rbx,           rby,           1,   rbh, 0xFF666666); // left
         fillUiRect(rbx + rbw - 1, rby,           1,   rbh, 0xFF666666); // right
         drawUiText("RESET", rbx + 9, rby + 5, 1, 0xFFDCDCDC);
-        // Column headers sit below the reset button so narrow panels do not overlap.
-        drawUiText("SKILL",     x + 16, rby + rbh + 10, 1, 0xFF999999);
-        drawUiText("XP GAINED", x + 70, rby + rbh + 10, 1, 0xFF999999);
+        // Column headers — XP column is right-anchored so it fits any panel width.
+        int xpColX = x + Math.max(50, panelW - 60);
+        int xpMaxW = panelW - (xpColX - x) - 4;
+        drawUiText("SKILL", x + 16, rby + rbh + 10, 1, 0xFF999999);
+        drawUiTextFittedFull(panelW < 200 ? "XP" : "XP GAINED", xpColX, rby + rbh + 10, xpMaxW, 1, 0xFF999999);
         fillUiRect(x + 16, rby + rbh + 25, panelW - 32, 1, 0xFF363636);
         // Rows
         boolean hasXp = false;
         for (long v : xpSessionGains) if (v > 0) { hasXp = true; break; }
         if (!hasXp) {
-            drawUiText("NO XP GAINED", x + 16, 110,  1, 0xFF999999);
-            drawUiText("THIS SESSION.",  x + 16, 126, 1, 0xFF999999);
+            drawUiTextFittedFull("NO XP GAINED", x + 16, 110, panelW - 32, 1, 0xFF999999);
+            drawUiTextFittedFull("THIS SESSION.", x + 16, 126, panelW - 32, 1, 0xFF999999);
         } else {
             int rowY = 104;
             for (int i = 0; i < SKILL_SHORT.length && rowY < screenH - 14; i++) {
                 if (xpSessionGains[i] > 0) {
                     drawUiText(SKILL_SHORT[i], x + 16, rowY, 1, 0xFFDCDCDC);
-                    drawUiText("+" + xpSessionGains[i], x + 70, rowY, 1, 0xFF80FF80);
+                    drawUiTextFittedFull("+" + xpSessionGains[i], xpColX, rowY, xpMaxW, 1, 0xFF80FF80);
                     rowY += 14;
                 }
             }
@@ -2860,13 +2879,20 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private int drawSettingsSectionTitle(int x, int y, String title) {
-        drawUiText(title, x + 16, y, 2, 0xFFE89E14);
+        drawUiTextFittedFull(title, x + 16, y, sidebarPanelW() - 32, 2, 0xFFE89E14);
         fillUiRect(x + 16, y + 15, sidebarPanelW() - 32, 1, 0xFF363636);
         return y + 18;
     }
 
     private int drawSettingsToggleRow(int x, int y, String text, boolean enabled) {
         int panelW = sidebarPanelW();
+        if (panelW < 200) {
+            // Narrow panel (e.g. fullscreen on 1080p): text on line 1 using full width,
+            // toggle right-aligned on line 2 so neither is squashed or truncated early.
+            drawUiTextFittedFull(text, x + 8, y + 2, panelW - 16, 0, 0xFFDCDCDC);
+            drawToggle(x + panelW - 48, y + 13, enabled);
+            return y + 28;
+        }
         drawUiTextFittedFull(text, x + 16, y + 5, panelW - 72, 0, 0xFFDCDCDC);
         drawToggle(x + panelW - 48, y + 2, enabled);
         return y + 20;
@@ -3058,24 +3084,21 @@ public final class GLRenderer implements TriangleRenderer {
         if (text == null || text.isEmpty() || maxWidth <= 0) return;
         java.awt.Font font = uiFont(scale);
         java.awt.FontMetrics fm = sg.getFontMetrics(font);
+        int chosenScale = scale;
         if (fm.stringWidth(text) > maxWidth) {
+            chosenScale = 0;
             font = UI_FONT_TINY;
             fm = sg.getFontMetrics(font);
         }
-        float squeeze = Math.min(1f, maxWidth / (float) Math.max(1, fm.stringWidth(text)));
-
-        java.awt.geom.AffineTransform prevTx = sg.getTransform();
-        try {
-            int a = (argb >> 24) & 0xFF, r = (argb >> 16) & 0xFF,
-                g = (argb >> 8)  & 0xFF, b =  argb        & 0xFF;
-            sg.setColor(new java.awt.Color(r, g, b, a));
-            sg.setFont(font);
-            sg.translate(x, y);
-            sg.scale(squeeze, 1.0);
-            sg.drawString(text, 0, fm.getAscent());
-        } finally {
-            sg.setTransform(prevTx);
+        String fitted = text;
+        if (fm.stringWidth(fitted) > maxWidth) {
+            String ellipsis = "...";
+            while (!fitted.isEmpty() && fm.stringWidth(fitted + ellipsis) > maxWidth) {
+                fitted = fitted.substring(0, fitted.length() - 1);
+            }
+            fitted = fitted.isEmpty() ? ellipsis : fitted + ellipsis;
         }
+        drawUiText(fitted, x, y, chosenScale, argb);
     }
 
     private java.awt.Font uiFont(int scale) {
@@ -3659,16 +3682,18 @@ public final class GLRenderer implements TriangleRenderer {
         }
         // Per-tab click handling
         switch (sidebarTab) {
-            case 0 -> { // Hiscores – skill selector buttons (2 per row, 10 rows, y=52..181)
+            case 0 -> { // Hiscores – skill selector buttons
                 int px = sidebarPanelX();
                 int panelW = sidebarPanelW();
                 int columns = HSCORE_SKILL_COLUMNS;
                 int buttonW = (panelW - 20 - (columns - 1) * 4) / columns;
+                int totalRows = (HSCORE_SKILL_LABEL.length + columns - 1) / columns;
                 int relX = x - (px + 10);
                 int relY = y - 52;
                 int col = relX / (buttonW + 4);
                 int row = relY / 13;
-                if (relX >= 0 && relY >= 0 && col >= 0 && col < columns
+                if (relX >= 0 && relY >= 0 && relY < totalRows * 13
+                        && col >= 0 && col < columns
                         && relX % (buttonW + 4) < buttonW) {
                     int skill = row * columns + col;
                     if (skill < HSCORE_SKILL_LABEL.length && skill != hiscoresSkill) {
@@ -3682,9 +3707,11 @@ public final class GLRenderer implements TriangleRenderer {
             case 1 -> { // XP Screen Toggle
                 if (y >= 140 && y < 184) xpScreenEnabled = !xpScreenEnabled;
             }
-            case 2 -> { // XP Tracker – reset button
+            case 2 -> { // XP Tracker – reset button (rbx = px+panelW-58, rbw=46, rby=52, rbh=22)
                 int px = sidebarPanelX();
-                if (x >= px + sidebarPanelW() - 58 && y >= 52 && y < 74) {
+                int panelW = sidebarPanelW();
+                int rbx = px + panelW - 58;
+                if (x >= rbx && x < rbx + 46 && y >= 52 && y < 74) {
                     resetXpSession();
                 }
             }
@@ -3738,9 +3765,14 @@ public final class GLRenderer implements TriangleRenderer {
         }
     }
 
+    private int settingsToggleRowH() {
+        return sidebarPanelW() < 200 ? 28 : 20;
+    }
+
     private void clickSettingsPanel(int x, int y) {
         int px = sidebarPanelX();
         int panelW = sidebarPanelW();
+        int rh = settingsToggleRowH();
         int rowY = 52;
 
         rowY += 18;
@@ -3765,33 +3797,33 @@ public final class GLRenderer implements TriangleRenderer {
 
         rowY += 18;
         if (toggleHit(px, rowY, x, y)) { setShiftDropInventory(!settingShiftDropInventory); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftTakeGround(!settingShiftTakeGround); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftAttackNpc(!settingShiftAttackNpc); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftPickpocketNpc(!settingShiftPickpocketNpc); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftBankNpc(!settingShiftBankNpc); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftUseQuicklyBankBooth(!settingShiftUseQuicklyBankBooth); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { setShiftExamineAnything(!settingShiftExamineAnything); return; }
-        rowY += 22;
+        rowY += rh + 2;
 
         rowY += 18;
         if (toggleHit(px, rowY, x, y)) { setDiscordRichPresence(!settingDiscordRichPresence); return; }
-        rowY += 22;
+        rowY += rh + 2;
 
         rowY += 18;
         if (toggleHit(px, rowY, x, y)) { setFps60(!sidebarFpsEnabled); return; }
-        rowY += 20;
+        rowY += rh;
         if (toggleHit(px, rowY, x, y)) { toggleFullscreen(); return; }
     }
 
     private boolean toggleHit(int px, int rowY, int mouseX, int mouseY) {
         return mouseX >= px + 8 && mouseX < px + sidebarPanelW() - 8
-                && mouseY >= rowY && mouseY < rowY + 20;
+                && mouseY >= rowY && mouseY < rowY + settingsToggleRowH();
     }
 
     private void setAfkIndex(int index) {
@@ -4076,22 +4108,36 @@ public final class GLRenderer implements TriangleRenderer {
     private void toggleFullscreen() {
         settingsFullscreen = !settingsFullscreen;
         if (settingsFullscreen) {
+            preFullscreenMaximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
             updateWindowSizeLimits();
             long monitor = glfwGetPrimaryMonitor();
             org.lwjgl.glfw.GLFWVidMode mode = glfwGetVideoMode(monitor);
             if (mode != null) {
-                glfwSetWindowMonitor(window, monitor, 0, 0,
-                        mode.width(), mode.height(), mode.refreshRate());
+                // Borderless windowed fullscreen: covers the monitor without taking exclusive
+                // ownership of the display, so the OS compositor (DWM) can still capture the
+                // window for screenshots, screen recorders, and alt-tab previews.
+                glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
+                glfwSetWindowMonitor(window, NULL, 0, 0,
+                        mode.width(), mode.height(), GLFW_DONT_CARE);
             }
         } else {
+            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_TRUE);
+            glfwRestoreWindow(window);
             glfwSetWindowMonitor(window, NULL, 100, 100, outputW(), screenH, GLFW_DONT_CARE);
-            updateWindowSizeLimits();
+            if (preFullscreenMaximized) {
+                // Don't set size limits before maximizing — the aspect-ratio lock would
+                // prevent glfwMaximizeWindow from working. The maximize callback fires
+                // updateWindowSizeLimits() once the window is actually maximized.
+                glfwMaximizeWindow(window);
+            } else {
+                updateWindowSizeLimits();
+            }
         }
         updateOutputViewport();
     }
 
     private boolean sidebarInsideWindow() {
-        return glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
+        return settingsFullscreen || glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
     }
 
     private int sidebarPanelW() {

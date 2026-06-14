@@ -27,7 +27,7 @@ jobs:
       # hardcoded pom version and the updater re-downloads the same release forever.
       - name: Set release version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        run: mvn --batch-mode versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+        run: mvn --batch-mode versions:set -DnewVersion="${GITHUB_REF_NAME}" -DgenerateBackupPoms=false
 
       - name: Build
         run: mvn --batch-mode clean package

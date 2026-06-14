@@ -38,7 +38,14 @@ $jarBin   = Join-Path $javaHome "bin\jar.exe"
 $javacVer = (& $javacBin -version 2>&1) -replace 'javac ', ''
 Write-Host "Using JDK $javacVer from $javaHome"
 
-Remove-Item -Recurse -Force $jarOutputDir -ErrorAction SilentlyContinue
+Write-Host "Cleaning $jarOutputDir..."
+if (Test-Path $jarOutputDir) {
+    try {
+        Remove-Item -Recurse -Force $jarOutputDir -ErrorAction Stop
+    } catch {
+        throw "Could not remove '$jarOutputDir'. Close any running client and try again. Details: $_"
+    }
+}
 New-Item -ItemType Directory -Force $classesDir | Out-Null
 
 if (Test-Path src/main/resources) {
@@ -91,7 +98,9 @@ Remove-Item "$classesDir/META-INF/*.SF" -Force -ErrorAction SilentlyContinue
 Remove-Item "$classesDir/META-INF/*.DSA" -Force -ErrorAction SilentlyContinue
 Remove-Item "$classesDir/META-INF/*.RSA" -Force -ErrorAction SilentlyContinue
 
-$clientVersion = if ($env:CLIENT_VERSION) { $env:CLIENT_VERSION.TrimStart("v") } else { "1.7" }
+$clientVersion = if ($env:CLIENT_VERSION) { $env:CLIENT_VERSION } else {
+    try { ([xml](Get-Content pom.xml -Raw -Encoding UTF8)).project.version } catch { "dev" }
+}
 @"
 {
   "version": "$clientVersion",
