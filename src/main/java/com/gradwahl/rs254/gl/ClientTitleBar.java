@@ -2,8 +2,15 @@ package com.gradwahl.rs254.gl;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 import javax.imageio.ImageIO;
+
+import org.lwjgl.system.MemoryUtil;
+
+import static org.lwjgl.opengl.GL33.*;
 
 /**
  * Single source of truth for the client title bar: constants, hit-testing, and
@@ -190,4 +197,122 @@ public final class ClientTitleBar {
         g.fillOval(cx - 6, cy,     4, 4);
         g.fillOval(cx + 2, cy,     4, 4);
     }
+
+    /**
+     * Native GL backing surface for the in-game title bar. The static Java2D
+     * paint/hit-test API above remains shared with the AWT pre-login window.
+     */
+    static final class Surface {
+        private final GlUiRenderer uiRenderer;
+        private BufferedImage buffer;
+        private IntBuffer direct;
+        private int texture;
+        private int width;
+        private int height;
+        private boolean dirty = true;
+        private boolean minimizeHover;
+        private boolean closeHover;
+        private boolean maximizeHover;
+        private boolean sidebarHover;
+        private boolean discordHover;
+
+        Surface(GlUiRenderer uiRenderer) {
+            this.uiRenderer = uiRenderer;
+        }
+
+        void init() {
+            texture = glGenTextures();
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+
+        void markDirty() {
+            dirty = true;
+        }
+
+        void updateHover(int button) {
+            boolean newClose = button == BTN_CLOSE;
+            boolean newMin = button == BTN_MINIMIZE;
+            boolean newMax = button == BTN_MAXIMIZE;
+            boolean newSide = button == BTN_SIDEBAR;
+            boolean newDisc = button == BTN_DISCORD;
+            if (newClose != closeHover || newMin != minimizeHover || newMax != maximizeHover
+                    || newSide != sidebarHover || newDisc != discordHover) {
+                closeHover = newClose;
+                minimizeHover = newMin;
+                maximizeHover = newMax;
+                sidebarHover = newSide;
+                discordHover = newDisc;
+                dirty = true;
+            }
+        }
+
+        void render(int logicalWidth, String title, boolean maximized, boolean sidebarOpen,
+                    int framebufferWidth, int framebufferHeight, int physicalHeight) {
+            if (texture == 0 || physicalHeight <= 0 || framebufferWidth <= 0 || framebufferHeight <= 0) {
+                return;
+            }
+            ensureSize(Math.max(1, logicalWidth), BAR_H);
+
+            if (dirty) {
+                Graphics2D g = buffer.createGraphics();
+                try {
+                    paint(g, width, title,
+                            closeHover, minimizeHover, maximizeHover, sidebarHover, discordHover,
+                            maximized, sidebarOpen);
+                } finally {
+                    g.dispose();
+                }
+
+                int[] pixels = ((DataBufferInt) buffer.getRaster().getDataBuffer()).getData();
+                direct.clear();
+                direct.put(pixels);
+                direct.flip();
+                glBindTexture(GL_TEXTURE_2D, texture);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_BGRA, GL_UNSIGNED_BYTE, direct);
+                dirty = false;
+            }
+
+            uiRenderer.drawTexture(texture, 0, framebufferHeight - physicalHeight,
+                    framebufferWidth, physicalHeight, 0f, 1f);
+            uiRenderer.bindGameTexture();
+        }
+
+        void dispose() {
+            if (buffer != null) {
+                buffer.flush();
+                buffer = null;
+            }
+            if (direct != null) {
+                MemoryUtil.memFree(direct);
+                direct = null;
+            }
+            if (texture != 0) {
+                glDeleteTextures(texture);
+                texture = 0;
+            }
+            width = 0;
+            height = 0;
+            dirty = true;
+        }
+
+        private void ensureSize(int newWidth, int newHeight) {
+            if (newWidth == width && newHeight == height && buffer != null && direct != null) return;
+            if (buffer != null) buffer.flush();
+            if (direct != null) MemoryUtil.memFree(direct);
+
+            buffer = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_ARGB);
+            direct = MemoryUtil.memAllocInt(newWidth * newHeight);
+            width = newWidth;
+            height = newHeight;
+
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, newWidth, newHeight, 0,
+                    GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+            dirty = true;
+        }
+    }
+
 }
