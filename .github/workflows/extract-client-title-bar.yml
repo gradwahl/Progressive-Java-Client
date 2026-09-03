@@ -23,30 +23,6 @@ jobs:
           java-version: "17"
           cache: maven
 
-      - name: Narrow titlebar destruction guard
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tools/extract_client_title_bar.py')
-          s = p.read_text(encoding='utf-8')
-          old = """replace_once(
-    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\\n',
-    '',
-    'titlebar direct buffer disposal')
-"""
-          new = """replace_once(
-    '        textureManager.dispose();\\n'
-    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\\n'
-    '        hiscoresFetcher.shutdownNow();\\n',
-    '        textureManager.dispose();\\n'
-    '        hiscoresFetcher.shutdownNow();\\n',
-    'titlebar destroy buffer disposal')
-"""
-          if s.count(old) != 1:
-              raise RuntimeError(f'expected old titlebar cleanup guard once, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
-          PY
-
       - name: Apply mechanical titlebar surface extraction
         run: python3 tools/extract_client_title_bar.py
 
