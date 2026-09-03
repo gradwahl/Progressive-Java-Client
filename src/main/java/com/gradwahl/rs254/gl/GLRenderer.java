@@ -484,12 +484,9 @@ public final class GLRenderer implements TriangleRenderer {
         }
     }
 
-    // Native-resolution sidebar — rendered via Java2D at physical screen pixels
-    private java.awt.image.BufferedImage sidebarNativeBuf;
-    private java.nio.IntBuffer           sidebarNativeDirect;
-    private int                          sidebarNativeTex;
-    private int                          sidebarNativeW, sidebarNativeH;
-    private java.awt.Graphics2D          sg;  // set during drawSidebar(), null otherwise
+    // Native-resolution sidebar surface; feature painters still live here for now.
+    private final SidebarRenderer sidebarRenderer;
+    private java.awt.Graphics2D sg;  // set while sidebar/world-map Java2D painters run
 
     private static final java.awt.Font UI_FONT_BODY = INTER_MEDIUM.deriveFont(9.5f);
     private static final java.awt.Font UI_FONT_HEAD = INTER_FONT.deriveFont(12f);
@@ -636,6 +633,7 @@ public final class GLRenderer implements TriangleRenderer {
         this.glWindow = new GlWindow();
         this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;
         this.uiRenderer = new GlUiRenderer(maxUiW, screenH);
+        this.sidebarRenderer = new SidebarRenderer(uiRenderer);
         this.windowW = outputW();
         this.windowH = windowedLogicalHeight();
         loadSettings();
@@ -962,10 +960,9 @@ public final class GLRenderer implements TriangleRenderer {
         if (hdScene != null) hdScene.dispose();
         legacyRenderer.dispose();
         uiRenderer.dispose();
-        if (sidebarNativeTex != 0) glDeleteTextures(sidebarNativeTex);
+        sidebarRenderer.dispose();
         if (titleBarTex != 0) glDeleteTextures(titleBarTex);
         textureManager.dispose();
-        if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
         if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
         hiscoresFetcher.shutdownNow();
         DISCORD_RPC.disconnect();
@@ -1006,11 +1003,7 @@ public final class GLRenderer implements TriangleRenderer {
 
     private void setupUIPass() {
         uiRenderer.init();
-
-        sidebarNativeTex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        sidebarRenderer.init();
 
         titleBarTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, titleBarTex);
@@ -1085,98 +1078,41 @@ public final class GLRenderer implements TriangleRenderer {
 
     private void drawSidebarNative(int physX, int physY, int physW, int physH, double scale,
                                    double logicalStartX) {
-        // Reallocate Java2D buffer and GL texture storage whenever the physical size changes.
-        if (physW != sidebarNativeW || physH != sidebarNativeH) {
-            if (sidebarNativeBuf != null) sidebarNativeBuf.flush();
-            if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
-            sidebarNativeBuf    = new java.awt.image.BufferedImage(physW, physH,
-                    java.awt.image.BufferedImage.TYPE_INT_ARGB);
-            sidebarNativeDirect = MemoryUtil.memAllocInt(physW * physH);
-            sidebarNativeW = physW; sidebarNativeH = physH;
-            glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, physW, physH, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        }
-
-        // Render sidebar into native buffer at physical resolution via Java2D.
-        sg = sidebarNativeBuf.createGraphics();
-        try {
-            sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
-                                java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            sg.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
-                                java.awt.RenderingHints.VALUE_RENDER_QUALITY);
-            sg.setRenderingHint(java.awt.RenderingHints.KEY_FRACTIONALMETRICS,
-                                java.awt.RenderingHints.VALUE_FRACTIONALMETRICS_ON);
-            sg.setBackground(new java.awt.Color(0, 0, 0, 0));
-            sg.clearRect(0, 0, physW, physH);
-            // Map the visible logical sidebar slice to physical pixels. In maximized
-            // mode the slice is clipped at the game edge instead of shrinking the game.
-            sg.scale(scale, scale);
-            sg.translate(-logicalStartX, 0);
-            drawSidebar();
-        } finally {
-            sg.dispose();
-            sg = null;
-        }
-
-        // Upload Java2D pixels (TYPE_INT_ARGB = BGRA in little-endian memory) to GL.
-        int[] pixels = ((java.awt.image.DataBufferInt)
-                sidebarNativeBuf.getRaster().getDataBuffer()).getData();
-        sidebarNativeDirect.clear();
-        sidebarNativeDirect.put(pixels);
-        sidebarNativeDirect.flip();
-        glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
-                        GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-
-        // Draw native sidebar texture in its physical viewport — exactly 1:1 pixels.
-        uiRenderer.drawBound(physX, physY, physW, physH, 0f, 1f);
-
-        // Restore the game UI texture for any subsequent passes.
-        uiRenderer.bindGameTexture();
+        sidebarRenderer.render(physX, physY, physW, physH, scale, scale, logicalStartX, 0, g -> {
+            g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+                    java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
+                    java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(java.awt.RenderingHints.KEY_FRACTIONALMETRICS,
+                    java.awt.RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+            java.awt.Graphics2D old = sg;
+            sg = g;
+            try {
+                drawSidebar();
+            } finally {
+                sg = old;
+            }
+        });
     }
 
     private void drawWorldMapFullscreenNative(int physW, int physH) {
-        if (physW != sidebarNativeW || physH != sidebarNativeH) {
-            if (sidebarNativeBuf != null) sidebarNativeBuf.flush();
-            if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
-            sidebarNativeBuf = new BufferedImage(physW, physH, BufferedImage.TYPE_INT_ARGB);
-            sidebarNativeDirect = MemoryUtil.memAllocInt(physW * physH);
-            sidebarNativeW = physW;
-            sidebarNativeH = physH;
-            glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, physW, physH, 0,
-                    GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        }
-
-        sg = sidebarNativeBuf.createGraphics();
-        try {
-            sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+        sidebarRenderer.render(0, 0, physW, physH,
+                (double) physW / screenW, (double) physH / screenH, 0, 0, g -> {
+            g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
                     java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            sg.setBackground(new java.awt.Color(0, 0, 0, 0));
-            sg.clearRect(0, 0, physW, physH);
-            sg.scale((double) physW / screenW, (double) physH / screenH);
-           fillUiRect(0, 0, screenW, screenH, 0xFF262626);
-           drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
-           drawWorldMapHeaderControls(0, 0, screenW);
-           drawSidebarHeaderCloseButton(0, screenW);
-            fillUiRect(0, WORLD_MAP_HEADER_H - 1, screenW, 1, 0xFF363636);
-            drawWorldMapView(0, WORLD_MAP_HEADER_H, screenW, screenH - WORLD_MAP_HEADER_H);
-        } finally {
-            sg.dispose();
-            sg = null;
-        }
-
-        int[] pixels = ((java.awt.image.DataBufferInt)
-                sidebarNativeBuf.getRaster().getDataBuffer()).getData();
-        sidebarNativeDirect.clear();
-        sidebarNativeDirect.put(pixels);
-        sidebarNativeDirect.flip();
-        glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
-                GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        uiRenderer.drawBound(0, 0, physW, physH, 0f, 1f);
-        uiRenderer.bindGameTexture();
+            java.awt.Graphics2D old = sg;
+            sg = g;
+            try {
+                fillUiRect(0, 0, screenW, screenH, 0xFF262626);
+                drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
+                drawWorldMapHeaderControls(0, 0, screenW);
+                drawSidebarHeaderCloseButton(0, screenW);
+                fillUiRect(0, WORLD_MAP_HEADER_H - 1, screenW, 1, 0xFF363636);
+                drawWorldMapView(0, WORLD_MAP_HEADER_H, screenW, screenH - WORLD_MAP_HEADER_H);
+            } finally {
+                sg = old;
+            }
+        });
     }
 
     private void drawWorldMapFloatingNative() {
@@ -1186,46 +1122,23 @@ public final class GLRenderer implements TriangleRenderer {
         }
         int physW = rect[2];
         int physH = rect[3];
-        if (physW != sidebarNativeW || physH != sidebarNativeH) {
-            if (sidebarNativeBuf != null) sidebarNativeBuf.flush();
-            if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
-            sidebarNativeBuf = new BufferedImage(physW, physH, BufferedImage.TYPE_INT_ARGB);
-            sidebarNativeDirect = MemoryUtil.memAllocInt(physW * physH);
-            sidebarNativeW = physW;
-            sidebarNativeH = physH;
-            glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, physW, physH, 0,
-                    GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        }
-
-        sg = sidebarNativeBuf.createGraphics();
-        try {
-            sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+        sidebarRenderer.render(rect[0], rect[1], physW, physH,
+                (double) physW / vpW, (double) physH / vpH, 0, 0, g -> {
+            g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
                     java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            sg.setBackground(new java.awt.Color(0, 0, 0, 0));
-            sg.clearRect(0, 0, physW, physH);
-            sg.scale((double) physW / vpW, (double) physH / vpH);
-            fillUiRect(0, 0, vpW, vpH, 0xF0262626);
-            drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
-            drawWorldMapHeaderControls(0, 0, vpW);
-            drawSidebarHeaderCloseButton(0, vpW);
-            fillUiRect(0, WORLD_MAP_HEADER_H - 1, vpW, 1, 0xFF363636);
-            drawWorldMapView(0, WORLD_MAP_HEADER_H, vpW, Math.max(0, vpH - WORLD_MAP_HEADER_H));
-        } finally {
-            sg.dispose();
-            sg = null;
-        }
-
-        int[] pixels = ((java.awt.image.DataBufferInt)
-                sidebarNativeBuf.getRaster().getDataBuffer()).getData();
-        sidebarNativeDirect.clear();
-        sidebarNativeDirect.put(pixels);
-        sidebarNativeDirect.flip();
-        glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
-                GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        uiRenderer.drawBound(rect[0], rect[1], rect[2], rect[3], 0f, 1f);
-        uiRenderer.bindGameTexture();
+            java.awt.Graphics2D old = sg;
+            sg = g;
+            try {
+                fillUiRect(0, 0, vpW, vpH, 0xF0262626);
+                drawUiTextVerticallyCentered("WORLD MAP", 12, 4, 20, 2, 0xFFDCDCDC);
+                drawWorldMapHeaderControls(0, 0, vpW);
+                drawSidebarHeaderCloseButton(0, vpW);
+                fillUiRect(0, WORLD_MAP_HEADER_H - 1, vpW, 1, 0xFF363636);
+                drawWorldMapView(0, WORLD_MAP_HEADER_H, vpW, Math.max(0, vpH - WORLD_MAP_HEADER_H));
+            } finally {
+                sg = old;
+            }
+        });
     }
 
     private void loadTabIcons() {
