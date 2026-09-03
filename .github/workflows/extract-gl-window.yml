@@ -123,13 +123,11 @@ jobs:
           poll_pos = src.index('        glfwPollEvents();', begin_frame)
           src = src[:poll_pos] + '        glWindow.pollEvents();' + src[poll_pos + len('        glfwPollEvents();'):]
 
-          # There are exactly two frame swaps in endFrame plus the old showWindowAt
-          # swaps, which were removed above. Delegate the two remaining swaps.
-          swap_count = src.count('            glfwSwapBuffers(window);\n') + src.count('        glfwSwapBuffers(window);\n')
+          # The old showWindowAt swap was removed above, leaving two endFrame swaps.
+          swap_count = src.count('glfwSwapBuffers(window);')
           if swap_count != 2:
               raise RuntimeError(f'expected 2 remaining frame swaps, found {swap_count}')
-          src = src.replace('            glfwSwapBuffers(window);\n', '            glWindow.swapBuffers();\n')
-          src = src.replace('        glfwSwapBuffers(window);\n', '        glWindow.swapBuffers();\n')
+          src = src.replace('glfwSwapBuffers(window);', 'glWindow.swapBuffers();')
 
           replace_once(
               '        glfwFreeCallbacks(window);\n'
