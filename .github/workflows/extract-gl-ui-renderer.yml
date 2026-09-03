@@ -85,13 +85,13 @@ jobs:
                  + src[upload_end:])
 
           draw_pattern = re.compile(
-              r'        glUniform1f\(uiUMinLoc, ([^;]+)\);\n'
-              r'        glUniform1f\(uiUMaxLoc, ([^;]+)\);\n'
-              r'        glViewport\(([^;]+)\);\n'
-              r'        glDrawArrays\(GL_TRIANGLES, 0, 6\);')
-          src, draw_count = draw_pattern.subn(
-              lambda m: f'        uiRenderer.drawBound({m.group(3)}, {m.group(1)}, {m.group(2)});',
-              src)
+              r'(?m)^(?P<i>[ \t]*)glUniform1f\(uiUMinLoc, (?P<min>[^;]+)\);\n'
+              r'(?P=i)glUniform1f\(uiUMaxLoc, (?P<max>[^;]+)\);\n'
+              r'(?P=i)glViewport\((?P<vp>[^;]+)\);\n'
+              r'(?P=i)glDrawArrays\(GL_TRIANGLES, 0, 6\);')
+          def draw_repl(m):
+              return f"{m.group('i')}uiRenderer.drawBound({m.group('vp')}, {m.group('min')}, {m.group('max')});"
+          src, draw_count = draw_pattern.subn(draw_repl, src)
           if draw_count != 5:
               raise RuntimeError(f'expected 5 shared UI draw blocks, found {draw_count}')
 
