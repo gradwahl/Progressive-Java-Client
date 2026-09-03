@@ -50,9 +50,12 @@ replace_once(
     '        titleBarSurface.dispose();\n',
     'titlebar texture disposal')
 replace_once(
-    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\n',
-    '',
-    'titlebar direct buffer disposal')
+    '        textureManager.dispose();\n'
+    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\n'
+    '        hiscoresFetcher.shutdownNow();\n',
+    '        textureManager.dispose();\n'
+    '        hiscoresFetcher.shutdownNow();\n',
+    'titlebar destroy buffer disposal')
 
 # Keep GLFW interaction/window policy in GLRenderer, but move hover state + dirty tracking.
 old_hover = '''        boolean inTitle = y >= 0 && y < CLIENT_TITLE_BAR_H;
