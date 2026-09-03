@@ -34,10 +34,23 @@ jobs:
       - name: Compile extracted legacy GPU classes
         run: |
           mvn --batch-mode dependency:build-classpath -Dmdep.outputFile=/tmp/refactor-cp.txt
-          mkdir -p /tmp/refactor-classes
+          mkdir -p /tmp/refactor-stubs/jagex2/graphics /tmp/refactor-classes /tmp/empty-sourcepath
+          cat > /tmp/refactor-stubs/jagex2/graphics/Pix3D.java <<'EOF'
+          package jagex2.graphics;
+          public final class Pix3D {
+              public static final int TEXTURE_COUNT = 50;
+              public static final Object[] textures = new Object[TEXTURE_COUNT];
+              public static final int[][] texturePalette = new int[TEXTURE_COUNT][];
+              public static final boolean[] textureTranslucent = new boolean[TEXTURE_COUNT];
+              public static final int[] colourTable = new int[65536];
+              public static boolean lowMem;
+              public static int[] getTexels(int id) { return new int[128 * 128]; }
+          }
+          EOF
+          javac --release 17 -d /tmp/refactor-classes /tmp/refactor-stubs/jagex2/graphics/Pix3D.java
           javac --release 17 \
-            -cp "$(cat /tmp/refactor-cp.txt)" \
-            -sourcepath src/main/java \
+            -cp "/tmp/refactor-classes:$(cat /tmp/refactor-cp.txt)" \
+            -sourcepath /tmp/empty-sourcepath \
             -d /tmp/refactor-classes \
             src/main/java/com/gradwahl/rs254/gl/GlShader.java \
             src/main/java/com/gradwahl/rs254/gl/GlTextureManager.java \
