@@ -342,32 +342,6 @@ public final class GLRenderer implements TriangleRenderer {
         "https://2004.losthq.rs/img/clueicon.png"
     };
 
-    private static final String UI_VERT_SRC = """
-            #version 330 core
-            layout(location=0) in vec2 aPos;
-            layout(location=1) in vec2 aUV;
-            uniform float uUMin;
-            uniform float uUMax;
-            out vec2 vUV;
-            void main() {
-                gl_Position = vec4(aPos, 0.0, 1.0);
-                vUV = vec2(uUMin + aUV.x * (uUMax - uUMin), aUV.y);
-            }
-            """;
-
-    private static final String UI_FRAG_SRC = """
-            #version 330 core
-            in vec2 vUV;
-            uniform sampler2D uUI;
-            out vec4 fragColor;
-            void main() {
-                vec4 c = texture(uUI, vUV);
-                // Alpha == 0 means this pixel was never written (or cleared) — show 3D scene.
-                if (c.a == 0.0) discard;
-                fragColor = vec4(c.rgb, 1.0);
-            }
-            """;
-
     // -------------------------------------------------------------------------
     // state
     // -------------------------------------------------------------------------
@@ -395,8 +369,7 @@ public final class GLRenderer implements TriangleRenderer {
     private final HdSceneRenderer.HdCamera hdCam = new HdSceneRenderer.HdCamera();
 
     // UI overlay pass
-    private int     uiProg, uiQuadVao, uiQuadVbo, uiTex, uiTexLoc, uiUMinLoc, uiUMaxLoc;
-    private IntBuffer uiDirectBuf;  // direct (off-heap) buffer for glTexSubImage2D
+    private final GlUiRenderer uiRenderer;
 
     // Native-resolution custom title bar for the in-game GLFW window.
     private BufferedImage titleBarBuf;
@@ -660,6 +633,7 @@ public final class GLRenderer implements TriangleRenderer {
         this.textureManager = new GlTextureManager();
         this.legacyRenderer = new LegacyGpuRenderer(screenW, screenH, textureManager);
         this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;
+        this.uiRenderer = new GlUiRenderer(maxUiW, screenH);
         this.windowW = outputW();
         this.windowH = windowedLogicalHeight();
         loadSettings();
@@ -1111,14 +1085,10 @@ public final class GLRenderer implements TriangleRenderer {
         legacyRenderer.flush();
         if (hdScene != null) hdScene.dispose();
         legacyRenderer.dispose();
-        glDeleteBuffers(uiQuadVbo);
-        glDeleteVertexArrays(uiQuadVao);
-        glDeleteProgram(uiProg);
-        glDeleteTextures(uiTex);
+        uiRenderer.dispose();
         if (sidebarNativeTex != 0) glDeleteTextures(sidebarNativeTex);
         if (titleBarTex != 0) glDeleteTextures(titleBarTex);
         textureManager.dispose();
-        if (uiDirectBuf      != null) MemoryUtil.memFree(uiDirectBuf);
         if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
         if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
         hiscoresFetcher.shutdownNow();
@@ -1161,45 +1131,7 @@ public final class GLRenderer implements TriangleRenderer {
     // -------------------------------------------------------------------------
 
     private void setupUIPass() {
-        // Allocate the CPU-side UI buffer that PixMap.draw() writes into.
-        PixMap.uiBuffer = new int[maxUiW * screenH];
-        PixMap.uiWidth  = maxUiW;
-        PixMap.uiHeight = screenH;
-        // Direct (off-heap) copy buffer for glTexSubImage2D — LWJGL requires direct buffers.
-        uiDirectBuf = MemoryUtil.memAllocInt(maxUiW * screenH);
-
-        // Fullscreen quad: two triangles covering NDC [-1,1].
-        // UV Y is flipped because RS has Y=0 at top, OpenGL NDC has Y=1 at top.
-        float[] quad = {
-            -1f, -1f,  0f, 1f,
-            -1f,  1f,  0f, 0f,
-             1f,  1f,  1f, 0f,
-            -1f, -1f,  0f, 1f,
-             1f,  1f,  1f, 0f,
-             1f, -1f,  1f, 1f,
-        };
-        uiQuadVao = glGenVertexArrays();
-        uiQuadVbo = glGenBuffers();
-        glBindVertexArray(uiQuadVao);
-        glBindBuffer(GL_ARRAY_BUFFER, uiQuadVbo);
-        glBufferData(GL_ARRAY_BUFFER, quad, GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 2, GL_FLOAT, false, 4 * Float.BYTES, 0L);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, false, 4 * Float.BYTES, 2L * Float.BYTES);
-        glEnableVertexAttribArray(1);
-
-        uiProg = GlShader.buildProgram(UI_VERT_SRC, UI_FRAG_SRC);
-        uiTexLoc  = glGetUniformLocation(uiProg, "uUI");
-        uiUMinLoc = glGetUniformLocation(uiProg, "uUMin");
-        uiUMaxLoc = glGetUniformLocation(uiProg, "uUMax");
-
-        // Create the 2D overlay texture (BGRA so IntBuffer maps straight).
-        uiTex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, uiTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, maxUiW, screenH, 0,
-                     GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        uiRenderer.init();
 
         sidebarNativeTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
@@ -1223,17 +1155,8 @@ public final class GLRenderer implements TriangleRenderer {
         drawLostHqZoomOverlay();
 
         // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
-        uiDirectBuf.clear();
-        uiDirectBuf.put(PixMap.uiBuffer, 0, maxUiW * screenH);
-        uiDirectBuf.flip();
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, maxUiW, screenH,
-                        GL_BGRA, GL_UNSIGNED_BYTE, uiDirectBuf);
-
-        glUseProgram(uiProg);
-        glUniform1i(uiTexLoc, 0);
-        glBindVertexArray(uiQuadVao);
+        uiRenderer.uploadGameUi();
+        uiRenderer.beginPass();
 
         int[] fw = new int[1], fh = new int[1];
         glfwGetFramebufferSize(window, fw, fh);
@@ -1254,10 +1177,7 @@ public final class GLRenderer implements TriangleRenderer {
             int sidebarW = insideSidebarW(fw[0], gameX, gameW, sidebarLogW, scale);
             int vertOff  = (contentH - gameH) / 2;
 
-            glUniform1f(uiUMinLoc, 0f);
-            glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
-            glViewport(gameX, vertOff, gameW, gameH);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            uiRenderer.drawBound(gameX, vertOff, gameW, gameH, 0f, (float) screenW / maxUiW);
 
             if (sidebarW > 0) {
                 double logicalStartX = screenW + sidebarLogW - sidebarW / scale;
@@ -1274,10 +1194,7 @@ public final class GLRenderer implements TriangleRenderer {
             int canvasX    = (fw[0] - gameW) / 2 + (int) Math.round(LiveTuner.canvasOffsetX * dpiScale);
             int vertOff    = contentH - gameH - (int) Math.round(LiveTuner.canvasOffsetY * dpiScale);
 
-            glUniform1f(uiUMinLoc, 0f);
-            glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
-            glViewport(canvasX, vertOff, gameW, gameH);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            uiRenderer.drawBound(canvasX, vertOff, gameW, gameH, 0f, (float) screenW / maxUiW);
 
             if (sidebarW > 0) {
                 drawSidebarNative(canvasX + gameW, vertOff, sidebarW, gameH, scale, screenW);
@@ -1339,13 +1256,10 @@ public final class GLRenderer implements TriangleRenderer {
                         GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
 
         // Draw native sidebar texture in its physical viewport — exactly 1:1 pixels.
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(physX, physY, physW, physH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        uiRenderer.drawBound(physX, physY, physW, physH, 0f, 1f);
 
         // Restore the game UI texture for any subsequent passes.
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.bindGameTexture();
     }
 
     private void drawWorldMapFullscreenNative(int physW, int physH) {
@@ -1387,11 +1301,8 @@ public final class GLRenderer implements TriangleRenderer {
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
                 GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(0, 0, physW, physH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.drawBound(0, 0, physW, physH, 0f, 1f);
+        uiRenderer.bindGameTexture();
     }
 
     private void drawWorldMapFloatingNative() {
@@ -1439,11 +1350,8 @@ public final class GLRenderer implements TriangleRenderer {
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
                 GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(rect[0], rect[1], rect[2], rect[3]);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.drawBound(rect[0], rect[1], rect[2], rect[3], 0f, 1f);
+        uiRenderer.bindGameTexture();
     }
 
     private void loadTabIcons() {
@@ -3782,17 +3690,9 @@ public final class GLRenderer implements TriangleRenderer {
         int titlePhysH = titleBarPhysicalH(fh[0]);
         if (titlePhysH <= 0) return;
 
-        glUseProgram(uiProg);
-        glUniform1i(uiTexLoc, 0);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, titleBarTex);
-        glBindVertexArray(uiQuadVao);
-        glViewport(0, fh[0] - titlePhysH, fw[0], titlePhysH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);
 
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.bindGameTexture();
         legacyRenderer.bindProgram();
         updateOutputViewport();
     }
