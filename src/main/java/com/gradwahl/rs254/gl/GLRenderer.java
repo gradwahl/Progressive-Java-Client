@@ -342,32 +342,6 @@ public final class GLRenderer implements TriangleRenderer {
         "https://2004.losthq.rs/img/clueicon.png"
     };
 
-    private static final String UI_VERT_SRC = """
-            #version 330 core
-            layout(location=0) in vec2 aPos;
-            layout(location=1) in vec2 aUV;
-            uniform float uUMin;
-            uniform float uUMax;
-            out vec2 vUV;
-            void main() {
-                gl_Position = vec4(aPos, 0.0, 1.0);
-                vUV = vec2(uUMin + aUV.x * (uUMax - uUMin), aUV.y);
-            }
-            """;
-
-    private static final String UI_FRAG_SRC = """
-            #version 330 core
-            in vec2 vUV;
-            uniform sampler2D uUI;
-            out vec4 fragColor;
-            void main() {
-                vec4 c = texture(uUI, vUV);
-                // Alpha == 0 means this pixel was never written (or cleared) — show 3D scene.
-                if (c.a == 0.0) discard;
-                fragColor = vec4(c.rgb, 1.0);
-            }
-            """;
-
     // -------------------------------------------------------------------------
     // state
     // -------------------------------------------------------------------------
@@ -378,7 +352,8 @@ public final class GLRenderer implements TriangleRenderer {
     private int       windowW;
     private int       windowH;
 
-    private long     window;
+    private final GlWindow glWindow;
+    private long     window;  // compatibility alias for layout/titlebar code
     private boolean  frameDrawable = true;
     private boolean  windowIconified;
     private int      framebufferW = 1;
@@ -395,8 +370,7 @@ public final class GLRenderer implements TriangleRenderer {
     private final HdSceneRenderer.HdCamera hdCam = new HdSceneRenderer.HdCamera();
 
     // UI overlay pass
-    private int     uiProg, uiQuadVao, uiQuadVbo, uiTex, uiTexLoc, uiUMinLoc, uiUMaxLoc;
-    private IntBuffer uiDirectBuf;  // direct (off-heap) buffer for glTexSubImage2D
+    private final GlUiRenderer uiRenderer;
 
     // Native-resolution custom title bar for the in-game GLFW window.
     private BufferedImage titleBarBuf;
@@ -659,7 +633,9 @@ public final class GLRenderer implements TriangleRenderer {
         this.screenH = screenH;
         this.textureManager = new GlTextureManager();
         this.legacyRenderer = new LegacyGpuRenderer(screenW, screenH, textureManager);
+        this.glWindow = new GlWindow();
         this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;
+        this.uiRenderer = new GlUiRenderer(maxUiW, screenH);
         this.windowW = outputW();
         this.windowH = windowedLogicalHeight();
         loadSettings();
@@ -669,66 +645,13 @@ public final class GLRenderer implements TriangleRenderer {
     // lifecycle
     // -------------------------------------------------------------------------
 
-    private long tryCreateWindow(int w, int h) {
-        // Attempt 1: OpenGL 3.3 core profile (preferred)
-        glfwDefaultWindowHints();
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE,   GLFW_FALSE);
-        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-        long win = glfwCreateWindow(w, h, titleBarText(), NULL, NULL);
-        if (win != NULL) return win;
-
-        // Attempt 2: OpenGL 3.3 compatibility profile (some older/VM drivers)
-        glfwDefaultWindowHints();
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE,   GLFW_FALSE);
-        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-        win = glfwCreateWindow(w, h, titleBarText(), NULL, NULL);
-        if (win != NULL) { System.err.println("[GL] Using compatibility profile fallback"); }
-        return win;
-    }
-
     /** Create the GLFW window and initialise OpenGL. Call once before use. */
     public void init() {
-        glfwSetErrorCallback((error, description) ->
-            System.err.println("[GLFW ERROR] " + error + ": " + org.lwjgl.glfw.GLFWErrorCallback.getDescription(description)));
-        if (!glfwInit()) throw new IllegalStateException("GLFW init failed");
-
-        // Query the primary monitor's content (DPI) scale so the initial window
-        // size produces a framebuffer close to native RS2 physical pixel dimensions.
-        // Without this, a 175% DPI display would create a 1388×880 framebuffer for
-        // a 793×503 logical window, upscaling everything and making UI elements huge.
-        glfwDefaultWindowHints();
-        float[] xscale = {1f}, yscale = {1f};
-        long primaryMonitor = glfwGetPrimaryMonitor();
-        if (primaryMonitor != NULL) {
-            glfwGetMonitorContentScale(primaryMonitor, xscale, yscale);
-        }
-        int initW = Math.max(1, Math.round(outputW() / xscale[0]));
-        int initH = Math.max(1, Math.round(windowedLogicalHeight() / yscale[0]));
-
-        window = tryCreateWindow(initW, initH);
-        if (window != NULL) {
-            int[] ww = new int[1], wh = new int[1];
-            glfwGetWindowSize(window, ww, wh);
-            windowW = Math.max(1, ww[0]);
-            windowH = Math.max(1, wh[0]);
-        }
-        if (window == NULL) throw new RuntimeException(
-            "GLFW window creation failed — OpenGL 3.3 is required.\n" +
-            "Update your GPU drivers, or on a VM enable 3D acceleration.\n" +
-            "On Windows without a GPU, install Mesa (opengl32.dll) and re-run.");
-        setWindowIcon();
-
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(1);
-        GL.createCapabilities();
+    glWindow.init(outputW(), windowedLogicalHeight(), titleBarText());
+    window = glWindow.handle();
+    int[] initialWindowSize = glWindow.windowSize();
+    windowW = Math.max(1, initialWindowSize[0]);
+    windowH = Math.max(1, initialWindowSize[1]);
 
         legacyRenderer.init();
 
@@ -746,89 +669,17 @@ public final class GLRenderer implements TriangleRenderer {
 
     /** Show the window centered on the primary monitor (first launch). */
     public void showWindow() {
-        long monitor = glfwGetPrimaryMonitor();
-        int x = Integer.MIN_VALUE, y = Integer.MIN_VALUE;
-        if (monitor != NULL) {
-            org.lwjgl.glfw.GLFWVidMode vidMode = glfwGetVideoMode(monitor);
-            if (vidMode != null) {
-                int[] mx = new int[1], my = new int[1];
-                glfwGetMonitorPos(monitor, mx, my);
-                int[] ww = new int[1], wh = new int[1];
-                glfwGetWindowSize(window, ww, wh);
-                x = mx[0] + (vidMode.width()  - ww[0]) / 2;
-                y = my[0] + (vidMode.height() - wh[0]) / 2;
-            }
-        }
-        showWindowAt(x, y);
+        glWindow.showCentered(this::prepareInitialWindowFrame);
     }
 
     /** Show the window at the given screen position, or centered if x == Integer.MIN_VALUE. */
     public void showWindowAt(int x, int y) {
-        if (window == NULL || glfwGetWindowAttrib(window, GLFW_VISIBLE) == GLFW_TRUE) {
-            return;
-        }
-        if (x != Integer.MIN_VALUE) {
-            glfwSetWindowPos(window, x, y);
-        }
-        // Pre-fill both front and back buffers with a clean frame so neither the
-        // stale back-buffer nor garbage appears the instant the window becomes visible.
-        for (int i = 0; i < 2; i++) {
-            glClear(GL_COLOR_BUFFER_BIT);
-            drawClientTitleBar();
-            glfwSwapBuffers(window);
-        }
-        glfwShowWindow(window);
-        glfwPollEvents();
+        glWindow.showAt(x, y, this::prepareInitialWindowFrame);
     }
 
-    private void setWindowIcon() {
-        try (InputStream is = GLRenderer.class.getResourceAsStream("/icon.ico")) {
-            if (is == null) return;
-            BufferedImage img = loadIco(is);
-            if (img == null) return;
-            int w = img.getWidth(), h = img.getHeight();
-            int[] rgb = img.getRGB(0, 0, w, h, null, 0, w);
-            ByteBuffer buf = MemoryUtil.memAlloc(w * h * 4);
-            try {
-                for (int px : rgb) {
-                    buf.put((byte) ((px >> 16) & 0xFF))
-                       .put((byte) ((px >> 8)  & 0xFF))
-                       .put((byte)  (px         & 0xFF))
-                       .put((byte) ((px >> 24) & 0xFF));
-                }
-                buf.flip();
-                try (GLFWImage.Buffer icons = GLFWImage.malloc(1)) {
-                    icons.position(0).width(w).height(h).pixels(buf);
-                    glfwSetWindowIcon(window, icons);
-                }
-            } finally {
-                MemoryUtil.memFree(buf);
-            }
-        } catch (Exception e) {
-            System.err.println("[Icon] " + e.getMessage());
-        }
-    }
-
-    private static BufferedImage loadIco(InputStream is) throws Exception {
-        byte[] data = is.readAllBytes();
-        if (data.length < 6) return null;
-        int count = (data[4] & 0xFF) | ((data[5] & 0xFF) << 8);
-        int bestW = -1, bestOff = 0, bestLen = 0;
-        for (int i = 0; i < count; i++) {
-            int base = 6 + i * 16;
-            if (base + 16 > data.length) break;
-            int w   = data[base] & 0xFF;
-            if (w == 0) w = 256;
-            int sz  = icoInt(data, base + 8);
-            int off = icoInt(data, base + 12);
-            if (w > bestW) { bestW = w; bestOff = off; bestLen = sz; }
-        }
-        if (bestW < 0) return null;
-        return ImageIO.read(new java.io.ByteArrayInputStream(data, bestOff, bestLen));
-    }
-
-    private static int icoInt(byte[] b, int off) {
-        return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8) | ((b[off + 2] & 0xFF) << 16) | ((b[off + 3] & 0xFF) << 24);
+    private void prepareInitialWindowFrame() {
+        glClear(GL_COLOR_BUFFER_BIT);
+        drawClientTitleBar();
     }
 
     /** Attach a GameShell so GLFW input events are forwarded to the game. */
@@ -839,7 +690,7 @@ public final class GLRenderer implements TriangleRenderer {
 
     @Override
     public boolean shouldClose() {
-        return glfwWindowShouldClose(window);
+        return glWindow.shouldClose();
     }
 
     /**
@@ -848,16 +699,15 @@ public final class GLRenderer implements TriangleRenderer {
      * drivers crash hard if we keep uploading/drawing/swap-buffering then.
      */
     public boolean isRenderPaused() {
-        glfwPollEvents();
-        if (window == NULL || windowIconified || glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
+        glWindow.pollEvents();
+        if (window == NULL || windowIconified || glWindow.isIconified()) {
             ClientDebugger.onRenderPauseState(true, "iconified", framebufferW, framebufferH);
             sleepWhileRenderPaused();
             return true;
         }
-        int[] fw = new int[1], fh = new int[1];
-        glfwGetFramebufferSize(window, fw, fh);
-        framebufferW = fw[0];
-        framebufferH = fh[0];
+        int[] framebufferSize = glWindow.framebufferSize();
+        framebufferW = framebufferSize[0];
+        framebufferH = framebufferSize[1];
         boolean paused = framebufferW <= 0 || framebufferH <= 0;
         ClientDebugger.onRenderPauseState(paused, paused ? "zero-framebuffer" : "drawable",
                 framebufferW, framebufferH);
@@ -877,7 +727,7 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     public void beginFrame(boolean clearViewport, boolean clearScene) {
-        glfwPollEvents();
+        glWindow.pollEvents();
         frameDrawable = !isRenderPaused();
         if (!frameDrawable) {
             return;
@@ -911,7 +761,7 @@ public final class GLRenderer implements TriangleRenderer {
             restoreCooldownFrames--;
             drawUIOverlay();
             drawClientTitleBar();
-            glfwSwapBuffers(window);
+            glWindow.swapBuffers();
             return;
         }
         drawUIOverlay();
@@ -920,7 +770,7 @@ public final class GLRenderer implements TriangleRenderer {
         drawStatsOverlay();
         drawWindowBorder();
         drawClientTitleBar();
-        glfwSwapBuffers(window);
+        glWindow.swapBuffers();
     }
 
     /**
@@ -1111,21 +961,15 @@ public final class GLRenderer implements TriangleRenderer {
         legacyRenderer.flush();
         if (hdScene != null) hdScene.dispose();
         legacyRenderer.dispose();
-        glDeleteBuffers(uiQuadVbo);
-        glDeleteVertexArrays(uiQuadVao);
-        glDeleteProgram(uiProg);
-        glDeleteTextures(uiTex);
+        uiRenderer.dispose();
         if (sidebarNativeTex != 0) glDeleteTextures(sidebarNativeTex);
         if (titleBarTex != 0) glDeleteTextures(titleBarTex);
         textureManager.dispose();
-        if (uiDirectBuf      != null) MemoryUtil.memFree(uiDirectBuf);
         if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);
         if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
         hiscoresFetcher.shutdownNow();
         DISCORD_RPC.disconnect();
-        glfwFreeCallbacks(window);
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        glWindow.dispose();
     }
 
     // -------------------------------------------------------------------------
@@ -1161,45 +1005,7 @@ public final class GLRenderer implements TriangleRenderer {
     // -------------------------------------------------------------------------
 
     private void setupUIPass() {
-        // Allocate the CPU-side UI buffer that PixMap.draw() writes into.
-        PixMap.uiBuffer = new int[maxUiW * screenH];
-        PixMap.uiWidth  = maxUiW;
-        PixMap.uiHeight = screenH;
-        // Direct (off-heap) copy buffer for glTexSubImage2D — LWJGL requires direct buffers.
-        uiDirectBuf = MemoryUtil.memAllocInt(maxUiW * screenH);
-
-        // Fullscreen quad: two triangles covering NDC [-1,1].
-        // UV Y is flipped because RS has Y=0 at top, OpenGL NDC has Y=1 at top.
-        float[] quad = {
-            -1f, -1f,  0f, 1f,
-            -1f,  1f,  0f, 0f,
-             1f,  1f,  1f, 0f,
-            -1f, -1f,  0f, 1f,
-             1f,  1f,  1f, 0f,
-             1f, -1f,  1f, 1f,
-        };
-        uiQuadVao = glGenVertexArrays();
-        uiQuadVbo = glGenBuffers();
-        glBindVertexArray(uiQuadVao);
-        glBindBuffer(GL_ARRAY_BUFFER, uiQuadVbo);
-        glBufferData(GL_ARRAY_BUFFER, quad, GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 2, GL_FLOAT, false, 4 * Float.BYTES, 0L);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, false, 4 * Float.BYTES, 2L * Float.BYTES);
-        glEnableVertexAttribArray(1);
-
-        uiProg = GlShader.buildProgram(UI_VERT_SRC, UI_FRAG_SRC);
-        uiTexLoc  = glGetUniformLocation(uiProg, "uUI");
-        uiUMinLoc = glGetUniformLocation(uiProg, "uUMin");
-        uiUMaxLoc = glGetUniformLocation(uiProg, "uUMax");
-
-        // Create the 2D overlay texture (BGRA so IntBuffer maps straight).
-        uiTex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, uiTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, maxUiW, screenH, 0,
-                     GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        uiRenderer.init();
 
         sidebarNativeTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
@@ -1223,17 +1029,8 @@ public final class GLRenderer implements TriangleRenderer {
         drawLostHqZoomOverlay();
 
         // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
-        uiDirectBuf.clear();
-        uiDirectBuf.put(PixMap.uiBuffer, 0, maxUiW * screenH);
-        uiDirectBuf.flip();
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, maxUiW, screenH,
-                        GL_BGRA, GL_UNSIGNED_BYTE, uiDirectBuf);
-
-        glUseProgram(uiProg);
-        glUniform1i(uiTexLoc, 0);
-        glBindVertexArray(uiQuadVao);
+        uiRenderer.uploadGameUi();
+        uiRenderer.beginPass();
 
         int[] fw = new int[1], fh = new int[1];
         glfwGetFramebufferSize(window, fw, fh);
@@ -1254,10 +1051,7 @@ public final class GLRenderer implements TriangleRenderer {
             int sidebarW = insideSidebarW(fw[0], gameX, gameW, sidebarLogW, scale);
             int vertOff  = (contentH - gameH) / 2;
 
-            glUniform1f(uiUMinLoc, 0f);
-            glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
-            glViewport(gameX, vertOff, gameW, gameH);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            uiRenderer.drawBound(gameX, vertOff, gameW, gameH, 0f, (float) screenW / maxUiW);
 
             if (sidebarW > 0) {
                 double logicalStartX = screenW + sidebarLogW - sidebarW / scale;
@@ -1274,10 +1068,7 @@ public final class GLRenderer implements TriangleRenderer {
             int canvasX    = (fw[0] - gameW) / 2 + (int) Math.round(LiveTuner.canvasOffsetX * dpiScale);
             int vertOff    = contentH - gameH - (int) Math.round(LiveTuner.canvasOffsetY * dpiScale);
 
-            glUniform1f(uiUMinLoc, 0f);
-            glUniform1f(uiUMaxLoc, (float) screenW / maxUiW);
-            glViewport(canvasX, vertOff, gameW, gameH);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            uiRenderer.drawBound(canvasX, vertOff, gameW, gameH, 0f, (float) screenW / maxUiW);
 
             if (sidebarW > 0) {
                 drawSidebarNative(canvasX + gameW, vertOff, sidebarW, gameH, scale, screenW);
@@ -1339,13 +1130,10 @@ public final class GLRenderer implements TriangleRenderer {
                         GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
 
         // Draw native sidebar texture in its physical viewport — exactly 1:1 pixels.
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(physX, physY, physW, physH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        uiRenderer.drawBound(physX, physY, physW, physH, 0f, 1f);
 
         // Restore the game UI texture for any subsequent passes.
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.bindGameTexture();
     }
 
     private void drawWorldMapFullscreenNative(int physW, int physH) {
@@ -1387,11 +1175,8 @@ public final class GLRenderer implements TriangleRenderer {
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
                 GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(0, 0, physW, physH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.drawBound(0, 0, physW, physH, 0f, 1f);
+        uiRenderer.bindGameTexture();
     }
 
     private void drawWorldMapFloatingNative() {
@@ -1439,11 +1224,8 @@ public final class GLRenderer implements TriangleRenderer {
         glBindTexture(GL_TEXTURE_2D, sidebarNativeTex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, physW, physH,
                 GL_BGRA, GL_UNSIGNED_BYTE, sidebarNativeDirect);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glViewport(rect[0], rect[1], rect[2], rect[3]);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.drawBound(rect[0], rect[1], rect[2], rect[3], 0f, 1f);
+        uiRenderer.bindGameTexture();
     }
 
     private void loadTabIcons() {
@@ -3782,17 +3564,9 @@ public final class GLRenderer implements TriangleRenderer {
         int titlePhysH = titleBarPhysicalH(fh[0]);
         if (titlePhysH <= 0) return;
 
-        glUseProgram(uiProg);
-        glUniform1i(uiTexLoc, 0);
-        glUniform1f(uiUMinLoc, 0f);
-        glUniform1f(uiUMaxLoc, 1f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, titleBarTex);
-        glBindVertexArray(uiQuadVao);
-        glViewport(0, fh[0] - titlePhysH, fw[0], titlePhysH);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);
 
-        glBindTexture(GL_TEXTURE_2D, uiTex);
+        uiRenderer.bindGameTexture();
         legacyRenderer.bindProgram();
         updateOutputViewport();
     }
@@ -3875,7 +3649,7 @@ public final class GLRenderer implements TriangleRenderer {
         if (glCursorNWSE == NULL) glCursorNWSE = glCursorHResize;
         if (glCursorNESW == NULL) glCursorNESW = glCursorHResize;
 
-        glfwSetCursorPosCallback(window, (win, x, y) -> {
+        glWindow.setCursorPosCallback((win, x, y) -> {
             // Active resize drag: move/resize the window and absorb the event.
             if (glResizeEdge != 0) {
                 int[] wx = new int[1], wy = new int[1];
@@ -3967,7 +3741,7 @@ public final class GLRenderer implements TriangleRenderer {
             shell.mouseY = mouseY;
         });
 
-        glfwSetScrollCallback(window, (win, xoff, yoff) -> {
+        glWindow.setScrollCallback((win, xoff, yoff) -> {
             if ((worldMapFullscreen || worldMapFloating || sidebarOpen && sidebarTab == 3) && worldMapLoaded
                     && cursorX >= worldMapMapX() && cursorX < worldMapMapX() + worldMapMapW()
                     && cursorY >= worldMapMapY() && cursorY < worldMapMapY() + worldMapMapH()) {
@@ -3987,7 +3761,7 @@ public final class GLRenderer implements TriangleRenderer {
             }
         });
 
-        glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+        glWindow.setMouseButtonCallback((win, button, action, mods) -> {
             double[] px = new double[1], py = new double[1];
             glfwGetCursorPos(win, px, py);
             if (button == GLFW_MOUSE_BUTTON_LEFT) {
@@ -4091,7 +3865,7 @@ public final class GLRenderer implements TriangleRenderer {
             }
         });
 
-        glfwSetFramebufferSizeCallback(window, (win, width, height) -> {
+        glWindow.setFramebufferSizeCallback((win, width, height) -> {
             framebufferW = width;
             framebufferH = height;
             frameDrawable = !windowIconified && width > 0 && height > 0;
@@ -4103,7 +3877,7 @@ public final class GLRenderer implements TriangleRenderer {
                 updateOutputViewport(width, height);
             }
         });
-        glfwSetWindowIconifyCallback(window, (win, iconified) -> {
+        glWindow.setWindowIconifyCallback((win, iconified) -> {
             windowIconified = iconified;
             frameDrawable = !iconified && framebufferW > 0 && framebufferH > 0;
             ClientDebugger.onRenderPauseState(!frameDrawable,
@@ -4114,11 +3888,11 @@ public final class GLRenderer implements TriangleRenderer {
                 updateOutputViewport();
             }
         });
-        glfwSetWindowSizeCallback(window, (win, width, height) -> {
+        glWindow.setWindowSizeCallback((win, width, height) -> {
             windowW = width;
             windowH = height;
         });
-        glfwSetWindowMaximizeCallback(window, (win, maximized) -> {
+        glWindow.setWindowMaximizeCallback((win, maximized) -> {
             updateWindowSizeLimits();
             if (!maximized && sidebarOpen) {
                 resizeForSidebar();
@@ -4127,7 +3901,7 @@ public final class GLRenderer implements TriangleRenderer {
             }
         });
 
-        glfwSetKeyCallback(window, (win, key, scancode, action, mods) -> {
+        glWindow.setKeyCallback((win, key, scancode, action, mods) -> {
             if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) {
                 shiftKeyDown = action != GLFW_RELEASE;
             }
@@ -4194,7 +3968,7 @@ public final class GLRenderer implements TriangleRenderer {
         });
 
         // Printable characters (letters, digits, symbols).
-        glfwSetCharCallback(window, (win, codepoint) -> {
+        glWindow.setCharCallback((win, codepoint) -> {
             // Route printable characters to the search box when it's focused.
             if (lostHqSearchFocused && sidebarOpen && sidebarTab == 4) {
                 if (codepoint >= 32 && codepoint < 128) {
