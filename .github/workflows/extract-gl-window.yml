@@ -1,0 +1,221 @@
+name: Extract GlWindow
+
+on:
+  push:
+    branches:
+      - refactor/gl-window
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/gl-window
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Apply mechanical GLFW lifecycle extraction
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main/java/com/gradwahl/rs254/gl/GLRenderer.java')
+          src = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global src
+              count = src.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{label}: expected exactly 1 match, found {count}')
+              src = src.replace(old, new, 1)
+
+          # GlWindow owns the native resource; keep the long handle as a temporary
+          # compatibility alias for existing layout/titlebar policy in this PR.
+          replace_once(
+              '    private long     window;\n',
+              '    private final GlWindow glWindow;\n'
+              '    private long     window;  // compatibility alias for layout/titlebar code\n',
+              'window state')
+
+          replace_once(
+              '        this.textureManager = new GlTextureManager();\n'
+              '        this.legacyRenderer = new LegacyGpuRenderer(screenW, screenH, textureManager);\n',
+              '        this.textureManager = new GlTextureManager();\n'
+              '        this.legacyRenderer = new LegacyGpuRenderer(screenW, screenH, textureManager);\n'
+              '        this.glWindow = new GlWindow();\n',
+              'GlWindow construction')
+
+          # Remove the old local GLFW creation helper entirely.
+          try_start = src.index('    private long tryCreateWindow(int w, int h) {')
+          init_start = src.index('    /** Create the GLFW window and initialise OpenGL. Call once before use. */', try_start)
+          src = src[:try_start] + src[init_start:]
+
+          # Keep all renderer initialization after GL capabilities exactly where it was.
+          init_method = src.index('    public void init() {')
+          legacy_init = src.index('        legacyRenderer.init();', init_method)
+          init_prefix = '''    public void init() {
+              glWindow.init(outputW(), windowedLogicalHeight(), titleBarText());
+              window = glWindow.handle();
+              int[] initialWindowSize = glWindow.windowSize();
+              windowW = Math.max(1, initialWindowSize[0]);
+              windowH = Math.max(1, initialWindowSize[1]);
+
+          '''.replace('\n              ', '\n        ')
+          src = src[:init_method] + init_prefix + src[legacy_init:]
+
+          # Move show/centering behavior into GlWindow while preserving the exact
+          # two-buffer prefill via a renderer callback.
+          show_start = src.index('    /** Show the window centered on the primary monitor (first launch). */')
+          icon_start = src.index('    private void setWindowIcon() {', show_start)
+          show_replacement = '''    /** Show the window centered on the primary monitor (first launch). */
+              public void showWindow() {
+                  glWindow.showCentered(this::prepareInitialWindowFrame);
+              }
+
+              /** Show the window at the given screen position, or centered if x == Integer.MIN_VALUE. */
+              public void showWindowAt(int x, int y) {
+                  glWindow.showAt(x, y, this::prepareInitialWindowFrame);
+              }
+
+              private void prepareInitialWindowFrame() {
+                  glClear(GL_COLOR_BUFFER_BIT);
+                  drawClientTitleBar();
+              }
+
+          '''.replace('\n              ', '\n    ').replace('\n                  ', '\n        ')
+          src = src[:show_start] + show_replacement + src[icon_start:]
+
+          # Remove icon/ICO helpers now owned by GlWindow.
+          icon_start = src.index('    private void setWindowIcon() {')
+          shell_doc = src.index('    /** Attach a GameShell so GLFW input events are forwarded to the game. */', icon_start)
+          src = src[:icon_start] + src[shell_doc:]
+
+          replace_once(
+              '        return glfwWindowShouldClose(window);\n',
+              '        return glWindow.shouldClose();\n',
+              'shouldClose delegation')
+
+          # Preserve both event-poll points that existed previously.
+          replace_once('        glfwPollEvents();\n        if (window == NULL || windowIconified || glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {\n',
+                       '        glWindow.pollEvents();\n        if (window == NULL || windowIconified || glWindow.isIconified()) {\n',
+                       'render pause poll/iconified')
+          replace_once(
+              '        int[] fw = new int[1], fh = new int[1];\n'
+              '        glfwGetFramebufferSize(window, fw, fh);\n'
+              '        framebufferW = fw[0];\n'
+              '        framebufferH = fh[0];\n',
+              '        int[] framebufferSize = glWindow.framebufferSize();\n'
+              '        framebufferW = framebufferSize[0];\n'
+              '        framebufferH = framebufferSize[1];\n',
+              'render pause framebuffer query')
+
+          # beginFrame has a second poll before isRenderPaused; preserve it.
+          begin_frame = src.index('    public void beginFrame(boolean clearViewport, boolean clearScene) {')
+          poll_pos = src.index('        glfwPollEvents();', begin_frame)
+          src = src[:poll_pos] + '        glWindow.pollEvents();' + src[poll_pos + len('        glfwPollEvents();'):]
+
+          # There are exactly two frame swaps in endFrame plus the old showWindowAt
+          # swaps, which were removed above. Delegate the two remaining swaps.
+          swap_count = src.count('            glfwSwapBuffers(window);\n') + src.count('        glfwSwapBuffers(window);\n')
+          if swap_count != 2:
+              raise RuntimeError(f'expected 2 remaining frame swaps, found {swap_count}')
+          src = src.replace('            glfwSwapBuffers(window);\n', '            glWindow.swapBuffers();\n')
+          src = src.replace('        glfwSwapBuffers(window);\n', '        glWindow.swapBuffers();\n')
+
+          replace_once(
+              '        glfwFreeCallbacks(window);\n'
+              '        glfwDestroyWindow(window);\n'
+              '        glfwTerminate();\n',
+              '        glWindow.dispose();\n',
+              'window disposal')
+
+          callbacks = {
+              'glfwSetCursorPosCallback(window, ': 'glWindow.setCursorPosCallback(',
+              'glfwSetScrollCallback(window, ': 'glWindow.setScrollCallback(',
+              'glfwSetMouseButtonCallback(window, ': 'glWindow.setMouseButtonCallback(',
+              'glfwSetFramebufferSizeCallback(window, ': 'glWindow.setFramebufferSizeCallback(',
+              'glfwSetWindowIconifyCallback(window, ': 'glWindow.setWindowIconifyCallback(',
+              'glfwSetWindowSizeCallback(window, ': 'glWindow.setWindowSizeCallback(',
+              'glfwSetWindowMaximizeCallback(window, ': 'glWindow.setWindowMaximizeCallback(',
+              'glfwSetKeyCallback(window, ': 'glWindow.setKeyCallback(',
+              'glfwSetCharCallback(window, ': 'glWindow.setCharCallback(',
+          }
+          for old, new in callbacks.items():
+              count = src.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{old}: expected exactly 1 callback registration, found {count}')
+              src = src.replace(old, new, 1)
+
+          # Creation/context/raw callback registration should no longer be local.
+          forbidden = [
+              'tryCreateWindow(', 'setWindowIcon()', 'loadIco(', 'icoInt(',
+              'glfwSetErrorCallback(', 'glfwInit()', 'glfwCreateWindow(',
+              'glfwMakeContextCurrent(', 'GL.createCapabilities()',
+              'glfwFreeCallbacks(window)', 'glfwDestroyWindow(window)', 'glfwTerminate()'
+          ]
+          leftovers = [token for token in forbidden if token in src]
+          if leftovers:
+              raise RuntimeError(f'GLRenderer still owns GLFW lifecycle tokens: {leftovers}')
+
+          path.write_text(src, encoding='utf-8')
+          PY
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Resolve pre-existing base conflicts for validation only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def choose_first_side(path):
+              lines = Path(path).read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      i += 1
+                      first = []
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          first.append(lines[i])
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      out.extend(first)
+                      i += 1
+                  else:
+                      out.append(lines[i])
+                      i += 1
+              Path(path).write_text(''.join(out), encoding='utf-8')
+
+          choose_first_side('src/main/java/com/gradwahl/rs254/Main.java')
+          choose_first_side('src/main/java/jagex2/client/Client.java')
+          PY
+
+      - name: Build refactored project
+        run: mvn --batch-mode -DskipTests clean package
+
+      - name: Commit production extraction only
+        run: |
+          git checkout -- src/main/java/com/gradwahl/rs254/Main.java src/main/java/jagex2/client/Client.java
+          rm .github/workflows/extract-gl-window.yml
+          git add src/main/java/com/gradwahl/rs254/gl/GLRenderer.java .github/workflows/extract-gl-window.yml
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor: wire GlWindow into GLRenderer"
+          git push origin HEAD:refactor/gl-window
