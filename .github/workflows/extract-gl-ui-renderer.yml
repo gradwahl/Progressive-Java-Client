@@ -76,24 +76,13 @@ jobs:
               '',
               'UI direct buffer disposal')
 
-          upload_old = '''        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.
-          glActiveTexture(GL_TEXTURE0);
-          glBindTexture(GL_TEXTURE_2D, uiTex);
-          uiDirectBuf.clear();
-          uiDirectBuf.put(PixMap.uiBuffer, 0, maxUiW * screenH);
-          uiDirectBuf.flip();
-          glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, maxUiW, screenH,
-                          GL_BGRA, GL_UNSIGNED_BYTE, uiDirectBuf);
-
-          glUseProgram(uiProg);
-          glUniform1i(uiTexLoc, 0);
-          glBindVertexArray(uiQuadVao);
-          '''
-          upload_old = upload_old.replace('\n          ', '\n        ').rstrip() + '\n'
-          upload_new = ('        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.\n'
-                        '        uiRenderer.uploadGameUi();\n'
-                        '        uiRenderer.beginPass();\n')
-          replace_once(upload_old, upload_new, 'UI upload/bind pass')
+          upload_start = src.index('        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.')
+          upload_end = src.index('        int[] fw = new int[1], fh = new int[1];', upload_start)
+          src = (src[:upload_start]
+                 + '        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.\n'
+                 + '        uiRenderer.uploadGameUi();\n'
+                 + '        uiRenderer.beginPass();\n\n'
+                 + src[upload_end:])
 
           draw_pattern = re.compile(
               r'        glUniform1f\(uiUMinLoc, ([^;]+)\);\n'
@@ -106,23 +95,14 @@ jobs:
           if draw_count != 5:
               raise RuntimeError(f'expected 5 shared UI draw blocks, found {draw_count}')
 
-          title_old = '''        glUseProgram(uiProg);
-          glUniform1i(uiTexLoc, 0);
-          glUniform1f(uiUMinLoc, 0f);
-          glUniform1f(uiUMaxLoc, 1f);
-          glActiveTexture(GL_TEXTURE0);
-          glBindTexture(GL_TEXTURE_2D, titleBarTex);
-          glBindVertexArray(uiQuadVao);
-          glViewport(0, fh[0] - titlePhysH, fw[0], titlePhysH);
-          glDrawArrays(GL_TRIANGLES, 0, 6);
-
-          glBindTexture(GL_TEXTURE_2D, uiTex);
-          '''
-          title_old = title_old.replace('\n          ', '\n        ').rstrip() + '\n'
-          title_new = ('        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);\n'
-                       '\n'
-                       '        uiRenderer.bindGameTexture();\n')
-          replace_once(title_old, title_new, 'titlebar UI pass')
+          title_method = src.index('    private void drawClientTitleBar() {')
+          title_start = src.index('        glUseProgram(uiProg);', title_method)
+          title_restore = '        glBindTexture(GL_TEXTURE_2D, uiTex);\n'
+          title_end = src.index(title_restore, title_start) + len(title_restore)
+          src = (src[:title_start]
+                 + '        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);\n\n'
+                 + '        uiRenderer.bindGameTexture();\n'
+                 + src[title_end:])
 
           restore_count = src.count('        glBindTexture(GL_TEXTURE_2D, uiTex);\n')
           if restore_count != 3:
