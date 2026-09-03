@@ -1,0 +1,73 @@
+name: Extract ClientTitleBar
+
+on:
+  push:
+    branches:
+      - refactor/client-title-bar
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/client-title-bar
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Apply mechanical titlebar surface extraction
+        run: python3 tools/extract_client_title_bar.py
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Resolve pre-existing base conflicts for validation only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def choose_first_side(path):
+              lines = Path(path).read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      i += 1
+                      first = []
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          first.append(lines[i]); i += 1
+                      if i == len(lines): raise RuntimeError(f'unclosed conflict in {path}')
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          i += 1
+                      if i == len(lines): raise RuntimeError(f'unclosed conflict in {path}')
+                      out.extend(first); i += 1
+                  else:
+                      out.append(lines[i]); i += 1
+              Path(path).write_text(''.join(out), encoding='utf-8')
+
+          choose_first_side('src/main/java/com/gradwahl/rs254/Main.java')
+          choose_first_side('src/main/java/jagex2/client/Client.java')
+          PY
+
+      - name: Build refactored project
+        run: mvn --batch-mode -DskipTests clean package
+
+      - name: Commit production extraction only
+        run: |
+          git checkout -- src/main/java/com/gradwahl/rs254/Main.java src/main/java/jagex2/client/Client.java
+          rm .github/workflows/extract-client-title-bar.yml tools/extract_client_title_bar.py
+          git add src/main/java/com/gradwahl/rs254/gl/GLRenderer.java src/main/java/com/gradwahl/rs254/gl/ClientTitleBar.java .github/workflows/extract-client-title-bar.yml tools/extract_client_title_bar.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor: move titlebar surface into ClientTitleBar"
+          git push origin HEAD:refactor/client-title-bar
