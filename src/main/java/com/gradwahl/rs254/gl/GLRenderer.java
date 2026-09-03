@@ -372,17 +372,8 @@ public final class GLRenderer implements TriangleRenderer {
     // UI overlay pass
     private final GlUiRenderer uiRenderer;
 
-    // Native-resolution custom title bar for the in-game GLFW window.
-    private BufferedImage titleBarBuf;
-    private IntBuffer     titleBarDirect;
-    private int           titleBarTex;
-    private int           titleBarBufW, titleBarBufH;
-    private boolean       titleBarDirty = true;
-    private boolean       titleMinimizeHover;
-    private boolean       titleCloseHover;
-    private boolean       titleMaximizeHover;
-    private boolean       titleSidebarHover;
-    private boolean       titleDiscordHover;
+    // Shared title-bar painter plus native GL backing surface.
+    private final ClientTitleBar.Surface titleBarSurface;
     private boolean       glTitleMaximized = false;
     private int           glSavedX, glSavedY, glSavedW, glSavedH;
     private boolean       glSidebarOpen = false;
@@ -634,6 +625,7 @@ public final class GLRenderer implements TriangleRenderer {
         this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;
         this.uiRenderer = new GlUiRenderer(maxUiW, screenH);
         this.sidebarRenderer = new SidebarRenderer(uiRenderer);
+        this.titleBarSurface = new ClientTitleBar.Surface(uiRenderer);
         this.windowW = outputW();
         this.windowH = windowedLogicalHeight();
         loadSettings();
@@ -961,9 +953,8 @@ public final class GLRenderer implements TriangleRenderer {
         legacyRenderer.dispose();
         uiRenderer.dispose();
         sidebarRenderer.dispose();
-        if (titleBarTex != 0) glDeleteTextures(titleBarTex);
+        titleBarSurface.dispose();
         textureManager.dispose();
-        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
         hiscoresFetcher.shutdownNow();
         DISCORD_RPC.disconnect();
         glWindow.dispose();
@@ -1004,11 +995,7 @@ public final class GLRenderer implements TriangleRenderer {
     private void setupUIPass() {
         uiRenderer.init();
         sidebarRenderer.init();
-
-        titleBarTex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, titleBarTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        titleBarSurface.init();
 
         loadTabIcons();
     }
@@ -3306,7 +3293,7 @@ public final class GLRenderer implements TriangleRenderer {
         String clean = username == null ? "" : username.trim();
         if (clean.equals(loggedInUsername)) return;
         loggedInUsername = clean;
-        titleBarDirty = true;
+        titleBarSurface.markDirty();
         if (window != NULL) {
             glfwSetWindowTitle(window, titleBarText());
         }
@@ -3353,16 +3340,7 @@ public final class GLRenderer implements TriangleRenderer {
             return true;
         }
         boolean inTitle = y >= 0 && y < CLIENT_TITLE_BAR_H;
-        int btn = inTitle ? titleHitTest(x) : ClientTitleBar.BTN_NONE;
-        boolean newClose = btn == ClientTitleBar.BTN_CLOSE,   newMin  = btn == ClientTitleBar.BTN_MINIMIZE,
-                newMax   = btn == ClientTitleBar.BTN_MAXIMIZE, newSide = btn == ClientTitleBar.BTN_SIDEBAR,
-                newDisc  = btn == ClientTitleBar.BTN_DISCORD;
-        if (newClose != titleCloseHover || newMin != titleMinimizeHover
-                || newMax != titleMaximizeHover || newSide != titleSidebarHover || newDisc != titleDiscordHover) {
-            titleCloseHover = newClose; titleMinimizeHover = newMin;
-            titleMaximizeHover = newMax; titleSidebarHover = newSide; titleDiscordHover = newDisc;
-            titleBarDirty = true;
-        }
+        titleBarSurface.updateHover(inTitle ? titleHitTest(x) : ClientTitleBar.BTN_NONE);
         return inTitle;
     }
 
@@ -3429,61 +3407,19 @@ public final class GLRenderer implements TriangleRenderer {
     }
 
     private void drawClientTitleBar() {
-        if (activeTitleBarHeight() <= 0 || titleBarTex == 0 || window == NULL) return;
-
-        int logicalW = Math.max(1, windowW);
-        int logicalH = CLIENT_TITLE_BAR_H;
-        if (titleBarBuf == null || titleBarBufW != logicalW || titleBarBufH != logicalH) {
-            if (titleBarBuf != null) titleBarBuf.flush();
-            if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);
-            titleBarBuf = new BufferedImage(logicalW, logicalH, BufferedImage.TYPE_INT_ARGB);
-            titleBarDirect = MemoryUtil.memAllocInt(logicalW * logicalH);
-            titleBarBufW = logicalW;
-            titleBarBufH = logicalH;
-            glBindTexture(GL_TEXTURE_2D, titleBarTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, logicalW, logicalH, 0,
-                    GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
-            titleBarDirty = true;
-        }
-
-        if (titleBarDirty) {
-            java.awt.Graphics2D oldSg = sg;
-            sg = titleBarBuf.createGraphics();
-            try {
-                sg.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
-                        java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-                ClientTitleBar.paint(sg, logicalW, titleBarText(),
-                        titleCloseHover, titleMinimizeHover, titleMaximizeHover,
-                        titleSidebarHover, titleDiscordHover,
-                        glTitleMaximized, glSidebarOpen);
-            } finally {
-                sg.dispose();
-                sg = oldSg;
-            }
-
-            int[] pixels = ((java.awt.image.DataBufferInt)
-                    titleBarBuf.getRaster().getDataBuffer()).getData();
-            titleBarDirect.clear();
-            titleBarDirect.put(pixels);
-            titleBarDirect.flip();
-            glBindTexture(GL_TEXTURE_2D, titleBarTex);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, logicalW, logicalH,
-                    GL_BGRA, GL_UNSIGNED_BYTE, titleBarDirect);
-            titleBarDirty = false;
-        }
+        if (activeTitleBarHeight() <= 0 || window == NULL) return;
 
         int[] fw = new int[1], fh = new int[1];
         glfwGetFramebufferSize(window, fw, fh);
         int titlePhysH = titleBarPhysicalH(fh[0]);
         if (titlePhysH <= 0) return;
 
-        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);
+        titleBarSurface.render(Math.max(1, windowW), titleBarText(),
+                glTitleMaximized, glSidebarOpen, fw[0], fh[0], titlePhysH);
 
-        uiRenderer.bindGameTexture();
         legacyRenderer.bindProgram();
         updateOutputViewport();
     }
-
 
     private long findWindowMonitor(int winCx, int winCy) {
         org.lwjgl.PointerBuffer mons = glfwGetMonitors();
@@ -3530,13 +3466,13 @@ public final class GLRenderer implements TriangleRenderer {
             glfwSetWindowPos(window, mx[0], my[0]);
             glTitleMaximized = true;
         }
-        titleBarDirty = true;
+        titleBarSurface.markDirty();
     }
 
     private void glToggleSidebar() {
         glSidebarOpen = false;
         sidebarOpen = false;
-        titleBarDirty = true;
+        titleBarSurface.markDirty();
     }
 
     private void glOpenDiscord() {
