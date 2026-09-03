@@ -1,6 +1,6 @@
 package jagex2.client;
 
-import com.gradwahl.rs254.gl.ClientTitleBar;
+import com.gradwahl.rs254.gl.ui.ClientTitleBar;
 import com.gradwahl.rs254.gl.LiveTuner;
 import deob.ObfuscatedName;
 import sign.signlink;

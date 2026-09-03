@@ -1,4 +1,4 @@
-package com.gradwahl.rs254.gl;
+package com.gradwahl.rs254.gl.ui;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
@@ -202,7 +202,7 @@ public final class ClientTitleBar {
      * Native GL backing surface for the in-game title bar. The static Java2D
      * paint/hit-test API above remains shared with the AWT pre-login window.
      */
-    static final class Surface {
+    public static final class Surface {
         private final GlUiRenderer uiRenderer;
         private BufferedImage buffer;
         private IntBuffer direct;
@@ -216,22 +216,22 @@ public final class ClientTitleBar {
         private boolean sidebarHover;
         private boolean discordHover;
 
-        Surface(GlUiRenderer uiRenderer) {
+        public Surface(GlUiRenderer uiRenderer) {
             this.uiRenderer = uiRenderer;
         }
 
-        void init() {
+        public void init() {
             texture = glGenTextures();
             glBindTexture(GL_TEXTURE_2D, texture);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         }
 
-        void markDirty() {
+        public void markDirty() {
             dirty = true;
         }
 
-        void updateHover(int button) {
+        public void updateHover(int button) {
             boolean newClose = button == BTN_CLOSE;
             boolean newMin = button == BTN_MINIMIZE;
             boolean newMax = button == BTN_MAXIMIZE;
@@ -248,7 +248,7 @@ public final class ClientTitleBar {
             }
         }
 
-        void render(int logicalWidth, String title, boolean maximized, boolean sidebarOpen,
+        public void render(int logicalWidth, String title, boolean maximized, boolean sidebarOpen,
                     int framebufferWidth, int framebufferHeight, int physicalHeight) {
             if (texture == 0 || physicalHeight <= 0 || framebufferWidth <= 0 || framebufferHeight <= 0) {
                 return;
@@ -280,7 +280,7 @@ public final class ClientTitleBar {
             uiRenderer.bindGameTexture();
         }
 
-        void dispose() {
+        public void dispose() {
             if (buffer != null) {
                 buffer.flush();
                 buffer = null;

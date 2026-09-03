@@ -1,5 +1,8 @@
 package com.gradwahl.rs254.gl;
 
+import com.gradwahl.rs254.gl.ui.SidebarRenderer;
+import com.gradwahl.rs254.gl.ui.GlUiRenderer;
+import com.gradwahl.rs254.gl.ui.ClientTitleBar;
 import jagex2.client.GameShell;
 import jagex2.client.Client;
 import jagex2.graphics.Pix3D;
