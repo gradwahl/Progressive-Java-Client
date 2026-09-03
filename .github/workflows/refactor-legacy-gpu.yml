@@ -24,7 +24,9 @@ jobs:
           cache: maven
 
       - name: Apply mechanical extraction
-        run: python3 tools/refactor_legacy_gpu.py
+        run: |
+          sed -i 's/"buildProgram(UI_VERT_SRC", "glUseProgram(prog)"/"uiProg = buildProgram", "glUseProgram(prog)"/' tools/refactor_legacy_gpu.py
+          python3 tools/refactor_legacy_gpu.py
 
       - name: Check patch formatting
         run: git diff --check
