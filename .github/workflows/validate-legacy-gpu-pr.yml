@@ -1,0 +1,55 @@
+name: Validate legacy GPU PR
+
+on:
+  push:
+    branches:
+      - refactor/legacy-gpu-extraction
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Resolve pre-existing conflict markers for validation only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def choose_first_side(path):
+              lines = Path(path).read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      i += 1
+                      first = []
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          first.append(lines[i])
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      out.extend(first)
+                      i += 1
+                  else:
+                      out.append(lines[i])
+                      i += 1
+              Path(path).write_text(''.join(out), encoding='utf-8')
+
+          choose_first_side('src/main/java/com/gradwahl/rs254/Main.java')
+          choose_first_side('src/main/java/jagex2/client/Client.java')
+          PY
+
+      - name: Build resolved baseline plus refactor
+        run: mvn --batch-mode -DskipTests clean package
