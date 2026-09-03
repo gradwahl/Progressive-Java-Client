@@ -1,4 +1,6 @@
-package com.gradwahl.rs254.gl;
+package com.gradwahl.rs254.gl.ui;
+
+import com.gradwahl.rs254.gl.GlShader;
 
 import jagex2.graphics.PixMap;
 import org.lwjgl.system.MemoryUtil;
@@ -14,7 +16,7 @@ import static org.lwjgl.opengl.GL33.*;
  * This class owns only the common PixMap upload texture, shader and fullscreen quad.
  * Sidebar, world-map and titlebar composition remain in GLRenderer and reuse this pass.
  */
-final class GlUiRenderer {
+public final class GlUiRenderer {
     private static final String UI_VERT_SRC = """
             #version 330 core
             layout(location=0) in vec2 aPos;
@@ -53,12 +55,12 @@ final class GlUiRenderer {
     private int uMaxLoc;
     private IntBuffer directBuffer;
 
-    GlUiRenderer(int maxUiW, int screenH) {
+    public GlUiRenderer(int maxUiW, int screenH) {
         this.maxUiW = maxUiW;
         this.screenH = screenH;
     }
 
-    void init() {
+    public void init() {
         // Allocate the CPU-side UI buffer that PixMap.draw() writes into.
         PixMap.uiBuffer = new int[maxUiW * screenH];
         PixMap.uiWidth = maxUiW;
@@ -100,7 +102,7 @@ final class GlUiRenderer {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 
-    void uploadGameUi() {
+    public void uploadGameUi() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gameTexture);
         directBuffer.clear();
@@ -110,20 +112,20 @@ final class GlUiRenderer {
                 GL_BGRA, GL_UNSIGNED_BYTE, directBuffer);
     }
 
-    void beginPass() {
+    public void beginPass() {
         glUseProgram(program);
         glUniform1i(textureLoc, 0);
         glBindVertexArray(quadVao);
     }
 
-    void drawBound(int x, int y, int width, int height, float uMin, float uMax) {
+    public void drawBound(int x, int y, int width, int height, float uMin, float uMax) {
         glUniform1f(uMinLoc, uMin);
         glUniform1f(uMaxLoc, uMax);
         glViewport(x, y, width, height);
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
-    void drawTexture(int texture, int x, int y, int width, int height, float uMin, float uMax) {
+    public void drawTexture(int texture, int x, int y, int width, int height, float uMin, float uMax) {
         glUseProgram(program);
         glUniform1i(textureLoc, 0);
         glUniform1f(uMinLoc, uMin);
@@ -135,11 +137,11 @@ final class GlUiRenderer {
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
-    void bindGameTexture() {
+    public void bindGameTexture() {
         glBindTexture(GL_TEXTURE_2D, gameTexture);
     }
 
-    void dispose() {
+    public void dispose() {
         glDeleteBuffers(quadVbo);
         glDeleteVertexArrays(quadVao);
         glDeleteProgram(program);

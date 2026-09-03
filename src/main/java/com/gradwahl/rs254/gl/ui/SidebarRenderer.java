@@ -1,4 +1,4 @@
-package com.gradwahl.rs254.gl;
+package com.gradwahl.rs254.gl.ui;
 
 import org.lwjgl.system.MemoryUtil;
 
@@ -12,9 +12,9 @@ import java.nio.IntBuffer;
 import static org.lwjgl.opengl.GL33.*;
 
 /** Owns the native Java2D/GL upload surface used by the sidebar and map overlays. */
-final class SidebarRenderer {
+public final class SidebarRenderer {
     @FunctionalInterface
-    interface Painter {
+    public interface Painter {
         void paint(Graphics2D g);
     }
 
@@ -25,18 +25,18 @@ final class SidebarRenderer {
     private int width;
     private int height;
 
-    SidebarRenderer(GlUiRenderer uiRenderer) {
+    public SidebarRenderer(GlUiRenderer uiRenderer) {
         this.uiRenderer = uiRenderer;
     }
 
-    void init() {
+    public void init() {
         texture = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, texture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 
-    void render(int physX, int physY, int physW, int physH,
+    public void render(int physX, int physY, int physW, int physH,
                 double scaleX, double scaleY, double logicalStartX, double logicalStartY,
                 Painter painter) {
         if (physW <= 0 || physH <= 0) return;
@@ -65,7 +65,7 @@ final class SidebarRenderer {
         uiRenderer.bindGameTexture();
     }
 
-    void dispose() {
+    public void dispose() {
         if (buffer != null) {
             buffer.flush();
             buffer = null;
