@@ -1,0 +1,83 @@
+name: Move gl ui package
+
+on:
+  push:
+    branches:
+      - refactor/gl-ui-package
+
+permissions:
+  contents: write
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/gl-ui-package
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Move UI classes into gl/ui
+        run: python3 tools/move_gl_ui_package.py
+
+      - name: Verify package cleanup
+        run: |
+          test -f src/main/java/com/gradwahl/rs254/gl/ui/GlUiRenderer.java
+          test -f src/main/java/com/gradwahl/rs254/gl/ui/SidebarRenderer.java
+          test -f src/main/java/com/gradwahl/rs254/gl/ui/ClientTitleBar.java
+          test ! -f src/main/java/com/gradwahl/rs254/gl/GlUiRenderer.java
+          test ! -f src/main/java/com/gradwahl/rs254/gl/SidebarRenderer.java
+          test ! -f src/main/java/com/gradwahl/rs254/gl/ClientTitleBar.java
+          ! grep -R "com.gradwahl.rs254.gl.ClientTitleBar" src/main/java --include='*.java'
+          ! grep -R "com.gradwahl.rs254.gl.GlUiRenderer" src/main/java --include='*.java'
+          ! grep -R "com.gradwahl.rs254.gl.SidebarRenderer" src/main/java --include='*.java'
+          git diff --check
+
+      - name: Resolve pre-existing base conflicts for validation only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def choose_first_side(path):
+              lines = Path(path).read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      i += 1
+                      first = []
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          first.append(lines[i]); i += 1
+                      if i == len(lines): raise RuntimeError(f'unclosed conflict in {path}')
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          i += 1
+                      if i == len(lines): raise RuntimeError(f'unclosed conflict in {path}')
+                      out.extend(first); i += 1
+                  else:
+                      out.append(lines[i]); i += 1
+              Path(path).write_text(''.join(out), encoding='utf-8')
+
+          choose_first_side('src/main/java/com/gradwahl/rs254/Main.java')
+          choose_first_side('src/main/java/jagex2/client/Client.java')
+          PY
+
+      - name: Build refactored project
+        run: mvn --batch-mode -DskipTests clean package
+
+      - name: Commit production package cleanup only
+        run: |
+          git checkout -- src/main/java/com/gradwahl/rs254/Main.java src/main/java/jagex2/client/Client.java
+          rm .github/workflows/move-gl-ui-package.yml tools/move_gl_ui_package.py
+          git add -A src/main/java .github/workflows/move-gl-ui-package.yml tools/move_gl_ui_package.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor: move UI renderers into gl.ui package"
+          git push origin HEAD:refactor/gl-ui-package
