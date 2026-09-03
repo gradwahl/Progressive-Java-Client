@@ -1,0 +1,321 @@
+name: Extract GlUiRenderer
+
+on:
+  push:
+    branches:
+      - refactor/gl-ui-renderer
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/gl-ui-renderer
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Apply mechanical UI transport extraction
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('src/main/java/com/gradwahl/rs254/gl/GLRenderer.java')
+          src = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global src
+              count = src.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{label}: expected exactly 1 match, found {count}')
+              src = src.replace(old, new, 1)
+
+          # Move the shared UI shader sources out of GLRenderer.
+          shader_start = src.index('    private static final String UI_VERT_SRC = """')
+          state_marker = '    // -------------------------------------------------------------------------\n    // state\n'
+          shader_end = src.index(state_marker, shader_start)
+          src = src[:shader_start] + src[shader_end:]
+
+          replace_once(
+              '    // UI overlay pass\n'
+              '    private int     uiProg, uiQuadVao, uiQuadVbo, uiTex, uiTexLoc, uiUMinLoc, uiUMaxLoc;\n'
+              '    private IntBuffer uiDirectBuf;  // direct (off-heap) buffer for glTexSubImage2D\n',
+              '    // UI overlay pass\n'
+              '    private final GlUiRenderer uiRenderer;\n',
+              'UI state fields')
+
+          replace_once(
+              '        this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;\n'
+              '        this.windowW = outputW();\n',
+              '        this.maxUiW = screenW + SIDEBAR_PANEL_W + SIDEBAR_RAIL_W;\n'
+              '        this.uiRenderer = new GlUiRenderer(maxUiW, screenH);\n'
+              '        this.windowW = outputW();\n',
+              'UI renderer construction')
+
+          # Keep sidebar/titlebar texture creation and icon loading in GLRenderer;
+          # only move the common UI shader/quad/main PixMap transport.
+          setup_start = src.index('    private void setupUIPass() {')
+          sidebar_tex = src.index('        sidebarNativeTex = glGenTextures();', setup_start)
+          src = src[:setup_start] + '    private void setupUIPass() {\n        uiRenderer.init();\n\n' + src[sidebar_tex:]
+
+          replace_once(
+              '        glDeleteBuffers(uiQuadVbo);\n'
+              '        glDeleteVertexArrays(uiQuadVao);\n'
+              '        glDeleteProgram(uiProg);\n'
+              '        glDeleteTextures(uiTex);\n',
+              '        uiRenderer.dispose();\n',
+              'UI GL disposal')
+          replace_once(
+              '        if (uiDirectBuf      != null) MemoryUtil.memFree(uiDirectBuf);\n',
+              '',
+              'UI direct buffer disposal')
+
+          upload_old = '''        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.\n        glActiveTexture(GL_TEXTURE0);\n        glBindTexture(GL_TEXTURE_2D, uiTex);\n        uiDirectBuf.clear();\n        uiDirectBuf.put(PixMap.uiBuffer, 0, maxUiW * screenH);\n        uiDirectBuf.flip();\n        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, maxUiW, screenH,\n                        GL_BGRA, GL_UNSIGNED_BYTE, uiDirectBuf);\n\n        glUseProgram(uiProg);\n        glUniform1i(uiTexLoc, 0);\n        glBindVertexArray(uiQuadVao);\n'''
+          upload_new = '''        // Upload game UI pixels. drawSidebar() no longer touches uiBuffer, so no backup needed.\n        uiRenderer.uploadGameUi();\n        uiRenderer.beginPass();\n'''
+          replace_once(upload_old, upload_new, 'UI upload/bind pass')
+
+          # Replace contiguous slice + viewport draws with the same calls owned by GlUiRenderer.
+          draw_pattern = re.compile(
+              r'        glUniform1f\(uiUMinLoc, ([^;]+)\);\n'
+              r'        glUniform1f\(uiUMaxLoc, ([^;]+)\);\n'
+              r'        glViewport\(([^;]+)\);\n'
+              r'        glDrawArrays\(GL_TRIANGLES, 0, 6\);')
+          src, draw_count = draw_pattern.subn(
+              lambda m: f'        uiRenderer.drawBound({m.group(3)}, {m.group(1)}, {m.group(2)});',
+              src)
+          if draw_count != 5:
+              raise RuntimeError(f'expected 5 shared UI draw blocks, found {draw_count}')
+
+          title_old = '''        glUseProgram(uiProg);\n        glUniform1i(uiTexLoc, 0);\n        glUniform1f(uiUMinLoc, 0f);\n        glUniform1f(uiUMaxLoc, 1f);\n        glActiveTexture(GL_TEXTURE0);\n        glBindTexture(GL_TEXTURE_2D, titleBarTex);\n        glBindVertexArray(uiQuadVao);\n        glViewport(0, fh[0] - titlePhysH, fw[0], titlePhysH);\n        glDrawArrays(GL_TRIANGLES, 0, 6);\n\n        glBindTexture(GL_TEXTURE_2D, uiTex);\n'''
+          title_new = '''        uiRenderer.drawTexture(titleBarTex, 0, fh[0] - titlePhysH, fw[0], titlePhysH, 0f, 1f);\n\n        uiRenderer.bindGameTexture();\n'''
+          replace_once(title_old, title_new, 'titlebar UI pass')
+
+          # Remaining occurrences are restores after sidebar/world-map native textures.
+          restore_count = src.count('        glBindTexture(GL_TEXTURE_2D, uiTex);\n')
+          if restore_count != 3:
+              raise RuntimeError(f'expected 3 UI texture restores, found {restore_count}')
+          src = src.replace('        glBindTexture(GL_TEXTURE_2D, uiTex);\n',
+                            '        uiRenderer.bindGameTexture();\n')
+
+          forbidden = [
+              'UI_VERT_SRC', 'UI_FRAG_SRC', 'uiProg', 'uiQuadVao', 'uiQuadVbo',
+              'uiTexLoc', 'uiUMinLoc', 'uiUMaxLoc', 'uiDirectBuf', 'uiTex'
+          ]
+          leftovers = [token for token in forbidden if token in src]
+          if leftovers:
+              raise RuntimeError(f'GLRenderer still owns UI transport tokens: {leftovers}')
+
+          path.write_text(src, encoding='utf-8')
+
+          ui = r'''package com.gradwahl.rs254.gl;
+
+import jagex2.graphics.PixMap;
+import org.lwjgl.system.MemoryUtil;
+
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
+
+import static org.lwjgl.opengl.GL33.*;
+
+/**
+ * Shared OpenGL transport for the software-composited client UI.
+ *
+ * This class owns only the common PixMap upload texture, shader and fullscreen quad.
+ * Sidebar, world-map and titlebar composition remain in GLRenderer and reuse this pass.
+ */
+final class GlUiRenderer {
+    private static final String UI_VERT_SRC = """
+            #version 330 core
+            layout(location=0) in vec2 aPos;
+            layout(location=1) in vec2 aUV;
+            uniform float uUMin;
+            uniform float uUMax;
+            out vec2 vUV;
+            void main() {
+                gl_Position = vec4(aPos, 0.0, 1.0);
+                vUV = vec2(uUMin + aUV.x * (uUMax - uUMin), aUV.y);
+            }
+            """;
+
+    private static final String UI_FRAG_SRC = """
+            #version 330 core
+            in vec2 vUV;
+            uniform sampler2D uUI;
+            out vec4 fragColor;
+            void main() {
+                vec4 c = texture(uUI, vUV);
+                // Alpha == 0 means this pixel was never written (or cleared) — show 3D scene.
+                if (c.a == 0.0) discard;
+                fragColor = vec4(c.rgb, 1.0);
+            }
+            """;
+
+    private final int maxUiW;
+    private final int screenH;
+
+    private int program;
+    private int quadVao;
+    private int quadVbo;
+    private int gameTexture;
+    private int textureLoc;
+    private int uMinLoc;
+    private int uMaxLoc;
+    private IntBuffer directBuffer;
+
+    GlUiRenderer(int maxUiW, int screenH) {
+        this.maxUiW = maxUiW;
+        this.screenH = screenH;
+    }
+
+    void init() {
+        // Allocate the CPU-side UI buffer that PixMap.draw() writes into.
+        PixMap.uiBuffer = new int[maxUiW * screenH];
+        PixMap.uiWidth = maxUiW;
+        PixMap.uiHeight = screenH;
+        // Direct (off-heap) copy buffer for glTexSubImage2D — LWJGL requires direct buffers.
+        directBuffer = MemoryUtil.memAllocInt(maxUiW * screenH);
+
+        // Fullscreen quad: two triangles covering NDC [-1,1].
+        // UV Y is flipped because RS has Y=0 at top, OpenGL NDC has Y=1 at top.
+        float[] quad = {
+            -1f, -1f,  0f, 1f,
+            -1f,  1f,  0f, 0f,
+             1f,  1f,  1f, 0f,
+            -1f, -1f,  0f, 1f,
+             1f,  1f,  1f, 0f,
+             1f, -1f,  1f, 1f,
+        };
+        quadVao = glGenVertexArrays();
+        quadVbo = glGenBuffers();
+        glBindVertexArray(quadVao);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVbo);
+        glBufferData(GL_ARRAY_BUFFER, quad, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 2, GL_FLOAT, false, 4 * Float.BYTES, 0L);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, 4 * Float.BYTES, 2L * Float.BYTES);
+        glEnableVertexAttribArray(1);
+
+        program = GlShader.buildProgram(UI_VERT_SRC, UI_FRAG_SRC);
+        textureLoc = glGetUniformLocation(program, "uUI");
+        uMinLoc = glGetUniformLocation(program, "uUMin");
+        uMaxLoc = glGetUniformLocation(program, "uUMax");
+
+        // Create the 2D overlay texture (BGRA so IntBuffer maps straight).
+        gameTexture = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, gameTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, maxUiW, screenH, 0,
+                GL_BGRA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    void uploadGameUi() {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gameTexture);
+        directBuffer.clear();
+        directBuffer.put(PixMap.uiBuffer, 0, maxUiW * screenH);
+        directBuffer.flip();
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, maxUiW, screenH,
+                GL_BGRA, GL_UNSIGNED_BYTE, directBuffer);
+    }
+
+    void beginPass() {
+        glUseProgram(program);
+        glUniform1i(textureLoc, 0);
+        glBindVertexArray(quadVao);
+    }
+
+    void drawBound(int x, int y, int width, int height, float uMin, float uMax) {
+        glUniform1f(uMinLoc, uMin);
+        glUniform1f(uMaxLoc, uMax);
+        glViewport(x, y, width, height);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+
+    void drawTexture(int texture, int x, int y, int width, int height, float uMin, float uMax) {
+        glUseProgram(program);
+        glUniform1i(textureLoc, 0);
+        glUniform1f(uMinLoc, uMin);
+        glUniform1f(uMaxLoc, uMax);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindVertexArray(quadVao);
+        glViewport(x, y, width, height);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+
+    void bindGameTexture() {
+        glBindTexture(GL_TEXTURE_2D, gameTexture);
+    }
+
+    void dispose() {
+        glDeleteBuffers(quadVbo);
+        glDeleteVertexArrays(quadVao);
+        glDeleteProgram(program);
+        glDeleteTextures(gameTexture);
+        if (directBuffer != null) MemoryUtil.memFree(directBuffer);
+    }
+}
+'''
+          Path('src/main/java/com/gradwahl/rs254/gl/GlUiRenderer.java').write_text(ui, encoding='utf-8')
+          PY
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Resolve pre-existing base conflicts for validation only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def choose_first_side(path):
+              lines = Path(path).read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      i += 1
+                      first = []
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          first.append(lines[i])
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          i += 1
+                      if i == len(lines):
+                          raise RuntimeError(f'unclosed conflict in {path}')
+                      out.extend(first)
+                      i += 1
+                  else:
+                      out.append(lines[i])
+                      i += 1
+              Path(path).write_text(''.join(out), encoding='utf-8')
+
+          choose_first_side('src/main/java/com/gradwahl/rs254/Main.java')
+          choose_first_side('src/main/java/jagex2/client/Client.java')
+          PY
+
+      - name: Build refactored project
+        run: mvn --batch-mode -DskipTests clean package
+
+      - name: Commit production extraction only
+        run: |
+          git checkout -- src/main/java/com/gradwahl/rs254/Main.java src/main/java/jagex2/client/Client.java
+          rm .github/workflows/extract-gl-ui-renderer.yml
+          git add src/main/java/com/gradwahl/rs254/gl/GLRenderer.java src/main/java/com/gradwahl/rs254/gl/GlUiRenderer.java .github/workflows/extract-gl-ui-renderer.yml
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor: extract GL UI renderer"
+          git push origin HEAD:refactor/gl-ui-renderer
