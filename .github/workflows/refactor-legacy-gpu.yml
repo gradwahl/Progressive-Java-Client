@@ -1,0 +1,42 @@
+name: Apply legacy GPU extraction
+
+on:
+  push:
+    branches:
+      - refactor/legacy-gpu-extraction
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/legacy-gpu-extraction
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Apply mechanical extraction
+        run: python3 tools/refactor_legacy_gpu.py
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Build
+        run: mvn --batch-mode -DskipTests clean package
+
+      - name: Commit extracted renderer
+        run: |
+          rm tools/refactor_legacy_gpu.py .github/workflows/refactor-legacy-gpu.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor: extract legacy GPU renderer"
+          git push origin HEAD:refactor/legacy-gpu-extraction
