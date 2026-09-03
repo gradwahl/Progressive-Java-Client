@@ -23,8 +23,19 @@ jobs:
           java-version: "17"
           cache: maven
 
+      - name: Use exact titlebar texture ownership guard
+        run: |
+          sed -i "s/'titleBarBuf', 'titleBarDirect', 'titleBarTex', 'titleBarBufW'/'titleBarBuf', 'titleBarDirect', 'titleBarBufW'/" tools/extract_client_title_bar.py
+
       - name: Apply mechanical titlebar surface extraction
         run: python3 tools/extract_client_title_bar.py
+
+      - name: Verify raw titlebar texture ownership moved
+        run: |
+          if grep -w "titleBarTex" src/main/java/com/gradwahl/rs254/gl/GLRenderer.java; then
+            echo "GLRenderer still contains raw titleBarTex ownership" >&2
+            exit 1
+          fi
 
       - name: Check patch formatting
         run: git diff --check
