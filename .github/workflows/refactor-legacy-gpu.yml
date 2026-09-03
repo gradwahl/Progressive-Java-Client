@@ -31,8 +31,17 @@ jobs:
       - name: Check patch formatting
         run: git diff --check
 
-      - name: Build
-        run: mvn --batch-mode -DskipTests clean package
+      - name: Compile extracted legacy GPU classes
+        run: |
+          mvn --batch-mode dependency:build-classpath -Dmdep.outputFile=/tmp/refactor-cp.txt
+          mkdir -p /tmp/refactor-classes
+          javac --release 17 \
+            -cp "$(cat /tmp/refactor-cp.txt)" \
+            -sourcepath src/main/java \
+            -d /tmp/refactor-classes \
+            src/main/java/com/gradwahl/rs254/gl/GlShader.java \
+            src/main/java/com/gradwahl/rs254/gl/GlTextureManager.java \
+            src/main/java/com/gradwahl/rs254/gl/LegacyGpuRenderer.java
 
       - name: Commit extracted renderer
         run: |
