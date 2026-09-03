@@ -46,9 +46,12 @@ replace_once(
     '        sidebarRenderer.dispose();\n',
     'sidebar texture disposal')
 replace_once(
-    '        if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);\n',
-    '',
-    'sidebar direct buffer disposal')
+    '        textureManager.dispose();\n'
+    '        if (sidebarNativeDirect != null) MemoryUtil.memFree(sidebarNativeDirect);\n'
+    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\n',
+    '        textureManager.dispose();\n'
+    '        if (titleBarDirect != null) MemoryUtil.memFree(titleBarDirect);\n',
+    'sidebar destroy buffer disposal')
 
 sidebar_start = src.index('    private void drawSidebarNative(int physX, int physY, int physW, int physH, double scale,')
 fullscreen_start = src.index('    private void drawWorldMapFullscreenNative(int physW, int physH) {', sidebar_start)
